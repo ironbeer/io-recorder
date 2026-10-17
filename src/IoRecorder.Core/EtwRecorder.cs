@@ -22,6 +22,7 @@ public sealed class EtwRecorder
     // Free space left on the drive of the record: a warning below the first, the recording is stopped and kept below the second.
     public const long WarnFreeBytes=5L<<30, StopFreeBytes=1L<<30;
     private const string SessionPrefix="IORecorder-";
+    private const int KeyPathLimit=2_000_000, UnresolvedSampleSize=2000;
     private static readonly Guid FileIoTaskGuid=new("90cbdc39-4a3e-11d1-84f4-0000f80464e3");
     private long _sequence,_dropped,_unresolved,_written,_rootMatched;
     private volatile bool _stoppedForSpace;
@@ -139,6 +140,9 @@ public sealed class EtwRecorder
         var pending=new Dictionary<ulong,IoEvent>();
         var unhandled=new Dictionary<string,long>();
         var unresolvedBy=new Dictionary<string,long>(StringComparer.OrdinalIgnoreCase);
+        var unresolvedSample=new List<object>();
+        // FileKey (the file itself) → its path, from every event and name event that had one.
+        var keyPaths=new Dictionary<ulong,string>();
         using var backgroundStop=new CancellationTokenSource();
         // The events go to numbered segments, compressed once closed (RecordLog); the sampler below hands them to the OS every
         // second and to the disk every 10 seconds, so a crash loses at most that much.
@@ -245,6 +249,9 @@ public sealed class EtwRecorder
             if(data.ProcessID==Environment.ProcessId && !options.IncludeOwnProcess) return null;
             path=Display(path ?? "",out bool rm);
             if(path.Length==0 && fileObject!=0 && openPaths.TryGetValue(fileObject,out var known)) { path=known; rm=roots.Match(known,known,out _); }
+            // The file itself may have been named by another handle's event or a name event: its key gives the path.
+            if(path.Length==0 && fileKey!=0 && keyPaths.TryGetValue(fileKey,out var named)) { path=named; rm=roots.Match(named,named,out _); }
+            else if(path.Length>0 && fileKey!=0 && keyPaths.Count<KeyPathLimit) keyPaths[fileKey]=path;
             if(fileKey!=0) renames.Observe(fileKey,path,lastUs);
             if(path.Length>0 && PathPolicy.IsUnder(path,output)) return null;
             bool pm=tracker.Matches(data.ProcessID),fm=false;
@@ -257,7 +264,11 @@ public sealed class EtwRecorder
             if(path.Length==0)
             {
                 Interlocked.Increment(ref _unresolved);
-                if(unresolvedBy.Count<4096) { var name=tracker.Name(data.ProcessID); unresolvedBy[name]=unresolvedBy.GetValueOrDefault(name)+1; }
+                var name=tracker.Name(data.ProcessID);
+                if(unresolvedBy.Count<4096) unresolvedBy[name]=unresolvedBy.GetValueOrDefault(name)+1;
+                // A sample of what stayed unnamed (unresolved-sample.jsonl), to tell later which files and processes they were.
+                if(unresolvedSample.Count<UnresolvedSampleSize)
+                    unresolvedSample.Add(new { timeUs=lastUs,operation=op,pid=data.ProcessID,process=name,fileObject=fileObject.ToString("X"),fileKey=fileKey!=0?fileKey.ToString("X"):null,matchesProcess=pm });
             }
             if(!match) return null;
             if(rm) Interlocked.Increment(ref _rootMatched);
@@ -320,10 +331,16 @@ public sealed class EtwRecorder
         kernel.ProcessStart+=d=> { tracker.Set(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
         kernel.ProcessDCStart+=d=> { tracker.Set(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
         kernel.ProcessStop+=d=> { Proc(new() { TimeUs=Us(d),Kind="Stop",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,ExitStatus=d.ExitStatus }); tracker.Remove(d.ProcessID); };
-        void Name(FileIONameTraceData d) { if(d.FileKey!=0) renames.Observe(d.FileKey,Display(d.FileName ?? "",out _),Us(d)); }
+        void Name(FileIONameTraceData d)
+        {
+            if(d.FileKey==0) return;
+            var named=Display(d.FileName ?? "",out _);
+            renames.Observe(d.FileKey,named,Us(d));
+            if(named.Length>0 && keyPaths.Count<KeyPathLimit) keyPaths[d.FileKey]=named;
+        }
         kernel.FileIOName+=Name; kernel.FileIOFileCreate+=Name; kernel.FileIOFileRundown+=Name;
         // The file is gone from memory: its key may be reused for another file.
-        kernel.FileIOFileDelete+=d=>targetKeys.Remove(d.FileKey);
+        kernel.FileIOFileDelete+=d=> { targetKeys.Remove(d.FileKey); keyPaths.Remove(d.FileKey); };
         kernel.FileIOCreate+=d=>
         {
             if(!string.IsNullOrEmpty(d.FileName)) openPaths[d.FileObject]=Display(d.FileName,out _);
@@ -402,6 +419,9 @@ public sealed class EtwRecorder
             try { await Task.WhenAll(writer,probeTask,memoryTask,lucidTask,environment); } catch(Exception ex) { failure??=ex; }
             log.Dispose();
             lock(processGate) processLog.Flush();
+            if(unresolvedSample.Count>0)
+                try { File.WriteAllLines(Path.Combine(output,"unresolved-sample.jsonl"),unresolvedSample.Select(s=>JsonSerializer.Serialize(s,JsonStore.Options))); }
+                catch(Exception ex) when(ex is IOException or UnauthorizedAccessException) { }
             Manifest.EndedUtc=DateTimeOffset.UtcNow; Manifest.EventsWritten=_written; Manifest.QueueEventsDropped=_dropped; Manifest.UnresolvedPaths=_unresolved;
             Manifest.RootMatchedEvents=_rootMatched; Manifest.UnhandledFileIoOpcodes=unhandled; Manifest.CheckpointUtc=DateTimeOffset.UtcNow;
             Manifest.UnresolvedPathsByProcess=unresolvedBy.OrderByDescending(p=>p.Value).Take(50).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.OrdinalIgnoreCase);

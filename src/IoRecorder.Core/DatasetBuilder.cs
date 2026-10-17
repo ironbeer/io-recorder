@@ -158,7 +158,9 @@ public static class DatasetBuilder
                             lastUpdate=clock.Elapsed.TotalSeconds;
                         }
                     }
-                    await stream.FlushAsync(token); fileIndex++;
+                    // Written to the disk before the next file: a replay right after generation must not compete with the OS
+                    // still writing gigabytes of dummy data out of its cache (it took twice as long when started 10 s after).
+                    await stream.FlushAsync(token); stream.Flush(flushToDisk:true); fileIndex++;
                 }
                 catch(Exception ex) when(Refused(ex))
                 {
@@ -284,6 +286,8 @@ public static class DatasetBuilder
                         offset+=n; done+=n;
                         work?.Report(new("書き換えられた範囲を元に戻しています",done,Math.Max(1,total),$"{done/1048576.0:N1} / {total/1048576.0:N1} MiB · {relative}"));
                     }
+                // As after generation: the rewritten data is on the disk when the reset ends.
+                RandomAccess.FlushToDisk(handle);
             }
         }
         finally { ArrayPool<byte>.Shared.Return(buffer); }

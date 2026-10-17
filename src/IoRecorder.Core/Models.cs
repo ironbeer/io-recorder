@@ -328,6 +328,8 @@ public sealed class ReplayOptions
     public bool RootOnly { get; set; }
     public PagingReplay Paging { get; set; } = PagingReplay.UnmatchedReads;
     public bool TrimLeadingIdle { get; set; }
+    // Wait before the first request until the OS has written recent writes out of its cache (WriteBack.SettleAsync).
+    public bool WaitForWriteBack { get; set; } = true;
 }
 
 public sealed class ReplayOutcome

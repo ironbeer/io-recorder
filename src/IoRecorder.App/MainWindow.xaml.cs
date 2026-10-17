@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         StorageText.Text=AppPaths.Root; RecordDestination.Text=AppPaths.Recordings+@"\日時_内容"; BenchDestination.Text=AppPaths.Benchmarks+@"\日時_構成名_seed";
         LoadSettings(); InitBench();
         AdminStatus.Text=EtwRecorder.IsAdministrator?"管理者で実行中":"通常権限（計測はできません）";
+        VersionText.Text=$"v{ToolVersion.Text} · Windows x64";
         ProcessBox.TextChanged+=(s,e)=>UpdateLabelHint(); RootsBox.TextChanged+=(s,e)=>UpdateLabelHint(); UpdateLabelHint();
         ChainWheel(LiveFiles); ChainWheel(ResultFiles); ChainWheel(EventGrid); ChainWheel(PatternGrid); ChainWheel(WriteGrid); ChainWheel(ChunkGrid); ChainWheel(CompareFilesGrid);
         // Recording the replay needs ETW, so administrator rights.
@@ -157,9 +158,10 @@ public partial class MainWindow : Window
             if(_recorder.LatestMemory is { } m) MemoryText.Text=$"{m.AvailableBytes/1073741824.0:N1} / {m.TotalBytes/1073741824.0:N1} GiB";
             QualityText.Text=$"保存済み {_recorder.EventsWritten:N0} · 保存欠落 {_recorder.QueueEventsDropped:N0}";
         }
-        else if(_benchRunning) ElapsedText.Text=_elapsed.Elapsed.ToString(@"hh\:mm\:ss");
         else
         {
+            // Replay, dummy generation, reset, benchmark, CSV export: the time since the work started (kept when it ends).
+            if(_elapsed.IsRunning) ElapsedText.Text=_elapsed.Elapsed.ToString(@"hh\:mm\:ss");
             try { var m=MemorySampler.Sample(0); MemoryText.Text=$"{m.AvailableBytes/1073741824.0:N1} / {m.TotalBytes/1073741824.0:N1} GiB"; } catch { }
         }
     }
@@ -197,6 +199,8 @@ public partial class MainWindow : Window
     }
     private void SetBusy(bool busy)
     {
+        // Every long piece of work starts here, so the clock at the top right counts it (FinishWork stops it).
+        if(busy) { _elapsed.Restart(); ElapsedText.Text="00:00:00"; }
         StartButton.IsEnabled=!busy;StopButton.IsEnabled=busy&&_recording;
         GenerateButton.IsEnabled=!busy;ReplayButton.IsEnabled=!busy;CancelReplayButton.IsEnabled=busy&&!_recording;
         BenchGenerateButton.IsEnabled=BenchRunButton.IsEnabled=!busy;BenchCancelButton.IsEnabled=busy&&_benchRunning;
@@ -348,7 +352,8 @@ public partial class MainWindow : Window
             _replayDataset=target; _replayScope=scope; SaveSettings();
             ReplayResultText.Text=$"生成完了\n{m.InitialSizes.Count:N0} ファイル / {m.InitialSizes.Values.Sum()/1048576.0:N1} MiB（{((ComboBoxItem)ReplayScope.SelectedItem).Content}）"
                 +(m.ExcludedPaths>0?$"\n対象外 {m.ExcludedPaths:N0} パス（変換・作成できない名前。再生ではスキップします）":"")
-                +$"\n{target}\n\nアップロード・キャッシュ条件を確認したら、リプレイを開始できます。";
+                +$"\n{target}\n\nアップロード・キャッシュ条件を確認したら、リプレイを開始できます。"
+                +(TestLocation.IndexWarning(target) is { } indexed?"\n\n注意: "+indexed:"");
             StatusBadge.Text="●  READY";
         }
         catch(OperationCanceledException) { LogText.Text="生成を中止しました。生成途中のフォルダは再生できません。";StatusBadge.Text="●  CANCELLED"; }
@@ -375,7 +380,8 @@ public partial class MainWindow : Window
             ReplayResultText.Text=$"{(result.Cancelled?"中止":"再生完了")}  /  {result.ElapsedSeconds:N1} 秒\n実行 {result.Executed:N0} / 失敗 {result.Failed:N0} / スキップ {result.Skipped:N0}"
                 +(result.ReproducedFailures+result.FailuresNotReproduced>0?$"\n記録で失敗した要求の出し直し: 同じく失敗 {result.ReproducedFailures:N0} / 失敗しなかった {result.FailuresNotReproduced:N0}（実行に含む）":"")
                 +(result.TemporaryOpens>0?$"\n一時的に開いた回数 {result.TemporaryOpens:N0}（開いた記録がないファイルへの要求のため）":"")
-                +$"\nRead {result.ReadBytes/1048576.0:N1} MiB\nWrite {result.WriteBytes/1048576.0:N1} MiB\nP95 {result.P95Ms:N2} ms / P99 {result.P99Ms:N2} ms\n投入の遅れ（{(options.Mode==ReplayMode.ThinkTime?"記録の間隔":"記録の時刻")}との差） 中央値 {result.PacingErrorP50Ms:N3} ms / P95 {result.PacingErrorP95Ms:N3} ms / 最大 {result.MaxSchedulingLagMs:N1} ms\n\n詳細は記録フォルダの replay-*.json / JSONL に保存しました。"+(_lastTrace is null?"":$"\n再生の記録: {result.TraceFolder}");
+                +$"\nRead {result.ReadBytes/1048576.0:N1} MiB\nWrite {result.WriteBytes/1048576.0:N1} MiB\nP95 {result.P95Ms:N2} ms / P99 {result.P99Ms:N2} ms\n投入の遅れ（{(options.Mode==ReplayMode.ThinkTime?"記録の間隔":"記録の時刻")}との差） 中央値 {result.PacingErrorP50Ms:N3} ms / P95 {result.PacingErrorP95Ms:N3} ms / 最大 {result.MaxSchedulingLagMs:N1} ms\n\n詳細は記録フォルダの replay-*.json / JSONL に保存しました。"+(_lastTrace is null?"":$"\n再生の記録: {result.TraceFolder}")
+                +string.Concat(result.Notes.Where(n=>n.StartsWith("再生の前に",StringComparison.Ordinal)||n.StartsWith("試験先がユーザー",StringComparison.Ordinal)).Select(n=>"\n\n注意: "+n));
             StatusBadge.Text=result.Failed>0?"●  CHECK RESULTS":"●  COMPLETE";
         }
         catch(Exception ex) { ReportError(ex);StatusBadge.Text="●  ERROR"; }

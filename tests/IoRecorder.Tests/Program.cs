@@ -561,6 +561,24 @@ await Test("machine: Windows 11 is named by its build, and network filter layers
     return Task.CompletedTask;
 });
 
+await Test("version, indexed test locations, the indexer note and the write-back wait",async()=>
+{
+    Check(ToolVersion.Describe("0.2.1+8d005b1eda1f5e8a6ff4ff0846556406bc3660d5")=="0.2.1 (8d005b1)" && ToolVersion.Describe("0.2.1")=="0.2.1" && ToolVersion.Describe(null)=="?" && ToolVersion.Text!="?","version text");
+    string profile=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    Check(TestLocation.IndexWarning(Path.Combine(profile,"Desktop","IOReplay")) is not null && TestLocation.IndexWarning(Path.Combine(profile,"AppData","Local","Temp","x")) is null && TestLocation.IndexWarning(@"C:\IOReplay") is null,
+        "the user's folders warn, AppData and folders outside the profile do not");
+    // Without administrator rights the modified list cannot be read: no waiting.
+    var clock=System.Diagnostics.Stopwatch.StartNew(); var settled=await WriteBack.SettleAsync(null,CancellationToken.None,TimeSpan.FromSeconds(3));
+    Check(clock.Elapsed<TimeSpan.FromSeconds(5),"the write-back wait ends within its limit");
+    // The indexer reading the test target during a replay is pointed out on the comparison.
+    string session=DemoSession.Create(Sub("indexer-demo")),dataset=Sub("indexer-dataset"),trace=DemoSession.CreateReplayTrace(session,dataset);
+    Check(ReplayComparison.Build(session,trace).IndexerNote is null,"no note without the indexer");
+    var link=JsonStore.Read<ReplayLink>(Path.Combine(trace,ReplayCapture.LinkFile));
+    var indexer=new IoEvent { Sequence=900001,StartUs=5_000_000,EndUs=5_000_100,Operation=IoOperation.Read,ProcessId=6060,ProcessName="SearchProtocolHost",Path=link.Paths.Keys.First(),FileObject="S",Size=4096,Transferred=4096,NtStatus=0,IoFlags=0 };
+    File.AppendAllLines(Path.Combine(trace,"events.jsonl"),[JsonSerializer.Serialize(indexer,JsonStore.Options)]); SessionAnalyzer.Export(trace);
+    Check(ReplayComparison.Build(session,trace).IndexerNote?.Contains("1 件")==true,"the indexer's I/O on the test target is noted");
+});
+
 await Test("analysis: the operation counts keep the OS's paging reads and writes apart from the application's",()=>
 {
     const string file=@"C:\work\clip.mov";

@@ -120,6 +120,9 @@ public sealed class ReplayComparison
     public ComparisonScope Scope { get; set; }
     public int? ReplayProcessId { get; set; }
     public const string ReplayProcessSuffix = "（再生）";
+    // Windows Search read the test target during the replay (its I/O mixes into the test); null when it did not.
+    public string? IndexerNote => Processes.Where(p => p.Process.StartsWith("Search", StringComparison.OrdinalIgnoreCase)).Sum(p => p.ReplayOperations) is > 0 and var n
+        ? $"再生中に、Windowsの検索インデクサーが試験先に {n:N0} 件のI/Oを出していました。インデックスの対象外のフォルダ（例: C:\\IOTest）で試すと、比較が安定します。" : null;
 
     public static ReplayComparison Build(string session, string trace, ComparisonScope scope = ComparisonScope.All)
     {

@@ -26,6 +26,7 @@ public sealed class ReplayEngine
         if(options.Speed<=0 || options.Speed>1000 || double.IsNaN(options.Speed) || options.Workers<1 || options.Workers>256)
             throw new ArgumentException("再生速度・並列数が範囲外です。");
         dataset=Path.GetFullPath(dataset); PathPolicy.RejectReparsePoint(dataset);
+        var settled=options.WaitForWriteBack?await WriteBack.SettleAsync(progress,token):null;
         var marker=Path.Combine(dataset,DatasetBuilder.Marker);
         var m=JsonStore.Read<DatasetManifest>(marker);
         var original=JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json"));
@@ -37,6 +38,9 @@ public sealed class ReplayEngine
         // A path that would leave the dummy or pass through a junction / symbolic link inside it is skipped, not the whole run.
         var unsafePaths=PathPolicy.UnsafeInside(dataset,m.Paths.Values.Concat(m.Directories).Concat(m.InitialSizes.Keys));
         var result=new ReplaySummary { SessionId=m.SessionId,Options=options };
+        if(settled is { Seconds: >= 1 } s)
+            result.Notes.Add($"再生の前に、OSのディスクへの書き出しが落ち着くのを {s.Seconds:N0} 秒待ちました（未書き出し {s.StartBytes/1048576.0:N0} MiB → {s.EndBytes/1048576.0:N0} MiB）。");
+        if(TestLocation.IndexWarning(dataset) is { } indexed) result.Notes.Add(indexed);
         if(unsafePaths.Count>0)
             result.Notes.Add($"ダミーのフォルダの外を指す、またはリンクを経由するため、{unsafePaths.Count:N0} パスへの操作を対象外にしました（SkippedUnsafePath）。例: "+string.Join(" / ",unsafePaths.Take(5)));
         if(m.ExcludedPaths>0) result.Notes.Add($"ダミー生成時に {m.ExcludedPaths:N0} パスを対象外にしています（変換できない名前など）。これらへの操作は SkippedUnresolvedPath です。");

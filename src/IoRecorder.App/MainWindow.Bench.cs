@@ -143,7 +143,8 @@ public partial class MainWindow
                 int contentSeed=Seeds.Value(config.Seed);
                 await Task.Run(()=>DatasetBuilder.GenerateAsync(folder,dataset,contentSeed,_progress,token,work));
                 _benchDataset=dataset; SaveSettings();
-                if(!run) BenchStage.Text="ダミーファイルを生成しました。準備ができたら「2. ベンチマークを実行」を押してください。";
+                if(!run) BenchStage.Text="ダミーファイルを生成しました。準備ができたら「2. ベンチマークを実行」を押してください。"
+                    +(TestLocation.IndexWarning(dataset) is { } indexed?"\n注意: "+indexed:"");
             }
             if(run)
             {

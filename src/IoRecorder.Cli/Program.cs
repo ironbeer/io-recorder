@@ -53,6 +53,7 @@ internal static class Cli
                 string seedText=a.Optional("seed") is { } given?Seeds.Normalize(given) ?? throw new ArgumentException("--seed には文字か数字を含めてください。")
                     :File.Exists(planFile)?JsonStore.Read<BenchmarkPlan>(planFile).Config.Seed:"42";
                 int seed=Seeds.Value(seedText);
+                if(TestLocation.IndexWarning(a.Required("target")) is { } indexed) Console.WriteLine("注意: "+indexed);
                 if(File.Exists(planFile)) BenchmarkPlanner.CheckSpace(JsonStore.Read<BenchmarkPlan>(planFile),a.Required("target"),includeDummy:true);
                 // The same --process-only / --root-only as the replay: only the files that replay touches are made.
                 var m=await DatasetBuilder.GenerateAsync(session,a.Required("target"),seed,progress,stop.Token,processOnly:a.Flag("process-only"),rootOnly:a.Flag("root-only"));
@@ -97,6 +98,7 @@ internal static class Cli
                 Console.WriteLine("\n  操作の件数（元 / 再生）: "+string.Join("、",c.Operations.Select(o=>$"{o.Operation} {o.Original:N0} / {o.Replay:N0}")));
                 Console.WriteLine($"\n  プロセスごとの操作（元 / 再生、「{ReplayComparison.ReplayProcessSuffix}」が再生したプロセス）:");
                 foreach(var p in c.Processes) Console.WriteLine($"    {p.Process,-32} {p.OriginalOperations,10:N0} / {p.ReplayOperations,10:N0}");
+                if(c.IndexerNote is { } indexer) Console.WriteLine("\n  注意: "+indexer);
                 return 0;
             }
             case "bench":
@@ -247,8 +249,7 @@ internal static class Cli
         JsonStore.Write(Path.Combine(output,"verification.json"),new { passed,checks,result.Reads,result.Writes,result.PagingReads,result.LatencySamples,operations=result.Operations,eof=events.Where(e=>e.Operation==IoOperation.SetEndOfFile).Select(e=>e.Size).ToArray(),renameResolved=renames.Any(e=>e.DestinationPath!=null) });
         Console.WriteLine(passed?"ETW実機テスト PASS":"ETW実機テスト FAIL — verification.jsonを確認してください。"); return passed?0:2;
     }
-    private static void Help()=>Console.WriteLine("""
-IO Recorder 0.1 — Windows ETW / Synthetic workload replay
+    private static void Help()=>Console.WriteLine($"IO Recorder {ToolVersion.Text} — Windows ETW / Synthetic workload replay\n"+"""
 
 record     --mode Process|Folder|Hybrid --process AfterFX --pid 1234 --root D:\Production
            [--duration 30] [--label "LucidLink warm"] [--out <フォルダ>]

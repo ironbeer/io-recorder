@@ -62,7 +62,8 @@ public partial class MainWindow
             CompareNote.Text=(c.Scope==ComparisonScope.Replayed
                 ?$"比べる範囲: 再生した要求だけ（再生したプロセス PID {c.ReplayProcessId} のI/Oと、元の記録のうち再生の対象にしたI/O）。試験先のOSやほかのプログラムのI/Oは含みません。"
                 :"比べる範囲: 全体（両方の記録のすべてのプロセス）。再生側には、再生中に試験先のOSやほかのプログラムが出したI/Oも入ります。")
-                +$"\n試験先のダミー: {c.Link.Dataset}　·　再生の記録: {trace}";
+                +$"\n試験先のダミー: {c.Link.Dataset}　·　再生の記録: {trace}"
+                +(c.IndexerNote is { } indexer?"\n注意: "+indexer:"");
             CompareValuesGrid.ItemsSource=c.Values.Select(v=>new ValueRow(v.Item,Value(v.Unit,v.Original),Value(v.Unit,v.Replay),Difference(v.Unit,v.Original,v.Replay))).ToArray();
             CompareGraph.SetComparison(c.OriginalTimeline,c.ReplayTimeline);
             CompareFilesGrid.ItemsSource=c.Files.Take(2000).Select(f=>new FileRow(f.Presence,f.Path,$"{Amount(f.OriginalReadBytes)} / {Amount(f.ReplayReadBytes)}",$"{Amount(f.OriginalWriteBytes)} / {Amount(f.ReplayWriteBytes)}",
