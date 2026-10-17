@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>iorecorder-cli</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../IoRecorder.Core/IoRecorder.Core.csproj" /></ItemGroup>
+</Project>

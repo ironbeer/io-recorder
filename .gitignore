@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+dist/
+artifacts/
+sessions/
+.vs/
+*.user
+*.etl
+*.zip

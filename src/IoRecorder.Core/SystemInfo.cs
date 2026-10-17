@@ -1,0 +1,295 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+
+namespace IoRecorder.Core;
+
+// Per-second samples of the machine: memory (MemorySampler), the standby and modified lists, CPU use of the machine and of
+// the target processes, and the bytes each network adapter has moved. The first sample has no CPU use (it needs two).
+public sealed class SystemSampler
+{
+    private long _idle, _kernel, _user;
+    private bool _haveTimes;
+    private readonly Dictionary<int,(TimeSpan Cpu,long Stamp)> _processCpu = [];
+    public MemorySample Sample(long timeUs, IEnumerable<int> pids)
+    {
+        var sample = MemorySampler.Sample(timeUs);
+        if (GetSystemTimes(out long idle, out long kernel, out long user))
+        {
+            long busy = (kernel - _kernel) + (user - _user), quiet = idle - _idle;
+            if (_haveTimes && busy > 0) sample.CpuPercent = Math.Round(100.0 * (busy - quiet) / busy, 1);
+            _idle = idle; _kernel = kernel; _user = user; _haveTimes = true;
+        }
+        if (MemoryLists(out ulong standby, out ulong modified)) { sample.StandbyBytes = standby; sample.ModifiedBytes = modified; }
+        long now = Stopwatch.GetTimestamp();
+        foreach (var pid in pids.Distinct())
+            try
+            {
+                using var p = Process.GetProcessById(pid);
+                var cpu = p.TotalProcessorTime; double? percent = null;
+                if (_processCpu.TryGetValue(pid, out var previous) && now > previous.Stamp)
+                    percent = Math.Round((cpu - previous.Cpu).TotalSeconds / ((now - previous.Stamp) / (double)Stopwatch.Frequency) * 100, 1);
+                _processCpu[pid] = (cpu, now);
+                sample.Processes.Add(new(pid, p.ProcessName, p.WorkingSet64, p.PrivateMemorySize64, percent));
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception) { }
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
+                var s = nic.GetIPStatistics(); sample.Network.Add(new(nic.Name, s.BytesReceived, s.BytesSent));
+            }
+        }
+        catch (NetworkInformationException) { }
+        return sample;
+    }
+    // SystemMemoryListInformation: needs the profile-single-process privilege (enabled by the recorder as administrator).
+    private static bool MemoryLists(out ulong standby, out ulong modified)
+    {
+        standby = modified = 0;
+        var info = new nuint[22]; // zero, free, modified, modified-no-write, bad, standby by priority [8], repurposed [8], modified page file
+        var handle = GCHandle.Alloc(info, GCHandleType.Pinned);
+        try { if (NtQuerySystemInformation(80, handle.AddrOfPinnedObject(), info.Length * IntPtr.Size, out _) != 0) return false; }
+        finally { handle.Free(); }
+        ulong page = (ulong)Environment.SystemPageSize;
+        for (int i = 5; i < 13; i++) standby += info[i];
+        standby *= page; modified = (ulong)info[2] * page;
+        return true;
+    }
+    [DllImport("kernel32.dll")] private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+    [DllImport("ntdll.dll")] internal static extern int NtQuerySystemInformation(int infoClass, nint buffer, int length, out int returned);
+}
+
+public static class Privileges
+{
+    // Enables privileges the administrator token holds but has off (debug: other processes' handles; profile: memory lists).
+    public static void Enable(params string[] names)
+    {
+        if (!OpenProcessToken(Process.GetCurrentProcess().Handle, 0x20 | 0x8, out var token)) return; // ADJUST_PRIVILEGES | QUERY
+        try
+        {
+            foreach (var name in names)
+            {
+                if (!LookupPrivilegeValue(null, name, out long luid)) continue;
+                var state = new TokenPrivilege { Count = 1, Luid = luid, Attributes = 2 }; // SE_PRIVILEGE_ENABLED
+                AdjustTokenPrivileges(token, false, ref state, 0, 0, 0);
+            }
+        }
+        finally { CloseHandle(token); }
+    }
+    [StructLayout(LayoutKind.Sequential, Pack = 4)] private struct TokenPrivilege { public int Count; public long Luid; public int Attributes; }
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(nint process, int access, out nint token);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool LookupPrivilegeValue(string? system, string name, out long luid);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool AdjustTokenPrivileges(nint token, bool disableAll, ref TokenPrivilege state, int length, nint previous, nint returned);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+}
+
+public sealed record OpenFile(int Pid, ulong FileObject, string Path);
+
+// The files open when the recording starts. ETW names a file when it is opened; a file opened before has no name in its
+// later I/O. Each open file handle of the chosen processes is looked up: its kernel file object (the value ETW reports) and
+// its path as the kernel writes it (\Device\...). Needs administrator rights with the debug privilege; a lookup that hangs
+// (a handle busy with a synchronous request) is given up after a short time.
+public static class OpenFiles
+{
+    public static (List<OpenFile> Files, string? Problem) Take(Func<int,bool> include, TimeSpan limit)
+    {
+        var files = new List<OpenFile>();
+        var clock = Stopwatch.StartNew();
+        int self = Environment.ProcessId;
+        // The object type number of files differs between Windows versions: found from a file this process holds open.
+        using var probe = File.OpenHandle(Environment.ProcessPath ?? typeof(OpenFiles).Assembly.Location, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        ulong own = (ulong)probe.DangerousGetHandle();
+        byte[]? table = Query();
+        if (table is null) return (files, "ハンドルの一覧を取得できませんでした。");
+        int count = (int)BitConverter.ToUInt64(table, 0), fileType = -1;
+        for (int i = 0; i < count; i++)
+        {
+            var e = Entry(table, i);
+            if (e.Pid == self && e.Handle == own) { fileType = e.Type; if (e.Object == 0) return (files, "Windowsがファイルオブジェクトのアドレスを返さないため、開始時に開いていたファイルを特定できませんでした。"); break; }
+        }
+        if (fileType < 0) return (files, "ファイルの種類番号を特定できませんでした。");
+        var processes = new Dictionary<int, nint>();
+        int abandoned = 0;
+        try
+        {
+            for (int i = 0; i < count && clock.Elapsed < limit && abandoned < 16; i++)
+            {
+                var e = Entry(table, i);
+                if (e.Type != fileType || e.Pid == self || e.Object == 0 || !include(e.Pid)) continue;
+                if (!processes.TryGetValue(e.Pid, out var process)) processes[e.Pid] = process = OpenProcess(0x40, false, e.Pid); // PROCESS_DUP_HANDLE
+                if (process == 0) continue;
+                if (!DuplicateHandle(process, (nint)e.Handle, GetCurrentProcess(), out var copy, 0, false, 2)) continue; // DUPLICATE_SAME_ACCESS
+                var lookup = Task.Run(() => { using var h = new SafeFileHandle(copy, true); return GetFileType(h) == 1 ? FinalPath(h) : null; });
+                if (!lookup.Wait(250)) { abandoned++; continue; }
+                if (lookup.Result is { } path) files.Add(new(e.Pid, e.Object, path));
+            }
+        }
+        finally { foreach (var p in processes.Values) if (p != 0) CloseHandle(p); }
+        string? problem = clock.Elapsed >= limit ? $"時間内に確認しきれませんでした（{files.Count:N0} 件まで）。" : abandoned >= 16 ? "応答しないハンドルが多いため、途中で確認をやめました。" : null;
+        return (files, problem);
+    }
+    private static string? FinalPath(SafeFileHandle handle)
+    {
+        var buffer = new char[32768];
+        int n = GetFinalPathNameByHandle(handle, buffer, buffer.Length, 0x2); // VOLUME_NAME_NT
+        return n > 0 && n < buffer.Length ? new string(buffer, 0, n) : null;
+    }
+    private static byte[]? Query()
+    {
+        int length = 16 << 20;
+        for (int attempt = 0; attempt < 6; attempt++)
+        {
+            var buffer = new byte[length];
+            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            int status, returned;
+            try { status = SystemSampler.NtQuerySystemInformation(64, handle.AddrOfPinnedObject(), length, out returned); } // SystemExtendedHandleInformation
+            finally { handle.Free(); }
+            if (status == 0) return buffer;
+            if (status != unchecked((int)0xC0000004)) return null; // STATUS_INFO_LENGTH_MISMATCH: grow and retry
+            length = Math.Max(length * 2, returned + (1 << 20));
+        }
+        return null;
+    }
+    // SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX (x64): Object, UniqueProcessId, HandleValue, GrantedAccess, CreatorBackTraceIndex,
+    // ObjectTypeIndex, HandleAttributes, Reserved — 40 bytes, after a 16-byte header.
+    private static (ulong Object, int Pid, ulong Handle, int Type) Entry(byte[] table, int index)
+    {
+        int at = 16 + index * 40;
+        return (BitConverter.ToUInt64(table, at), (int)BitConverter.ToUInt64(table, at + 8), BitConverter.ToUInt64(table, at + 16), BitConverter.ToUInt16(table, at + 30));
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(int access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DuplicateHandle(nint sourceProcess, nint source, nint targetProcess, out nint target, int access, bool inherit, int options);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+    [DllImport("kernel32.dll")] private static extern int GetFileType(SafeFileHandle handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern int GetFinalPathNameByHandle(SafeFileHandle handle, char[] path, int length, int flags);
+}
+
+public sealed class VolumeInfo
+{
+    public string Role { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string? Root { get; set; }
+    public string? FileSystem { get; set; }
+    public string? DriveType { get; set; }
+    public string? Label { get; set; }
+    public long? TotalBytes { get; set; }
+    public long? FreeBytes { get; set; }
+    public string? UncPath { get; set; }
+    public string? Error { get; set; }
+}
+public sealed class AdapterInfo
+{
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string Type { get; set; } = "";
+    public long SpeedBitsPerSecond { get; set; }
+    public string Status { get; set; } = "";
+}
+
+// The machine a record was made on, written once at the start (environment.json): what is needed later to tell why two
+// records differ (the storage's file system and free space, the network link, the filter drivers that see every file
+// request, such as antivirus and backup software).
+public sealed class EnvironmentInfo
+{
+    public string Tool { get; set; } = typeof(EnvironmentInfo).Assembly.GetName().Version?.ToString() ?? "";
+    public string Machine { get; set; } = Environment.MachineName;
+    public string? OsName { get; set; }
+    public string? OsDisplayVersion { get; set; }
+    public string? OsBuild { get; set; }
+    public string? CpuModel { get; set; }
+    public int LogicalProcessors { get; set; } = Environment.ProcessorCount;
+    public ulong TotalPhysicalBytes { get; set; }
+    public string TimeZone { get; set; } = TimeZoneInfo.Local.Id;
+    public double UtcOffsetHours { get; set; } = TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalHours;
+    public List<VolumeInfo> Volumes { get; set; } = [];
+    public List<AdapterInfo> NetworkAdapters { get; set; } = [];
+    public List<string> FilterDrivers { get; set; } = [];
+    public List<string> Problems { get; set; } = [];
+
+    public static EnvironmentInfo Collect(RecordingOptions options, string output)
+    {
+        var info = new EnvironmentInfo { TotalPhysicalBytes = MemorySampler.Sample(0).TotalBytes };
+        try
+        {
+            using var os = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+            info.OsName = os?.GetValue("ProductName") as string; info.OsDisplayVersion = os?.GetValue("DisplayVersion") as string;
+            info.OsBuild = $"{os?.GetValue("CurrentBuild")}.{os?.GetValue("UBR")}";
+            using var cpu = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
+            info.CpuModel = (cpu?.GetValue("ProcessorNameString") as string)?.Trim();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { info.Problems.Add("レジストリ: " + ex.Message); }
+        foreach (var root in options.ResolvedRoots) info.Volumes.Add(Volume("対象フォルダ", root.UserPath, root.UncPath));
+        info.Volumes.Add(Volume("記録の保存先", output, null));
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)))
+                info.NetworkAdapters.Add(new() { Name = nic.Name, Description = nic.Description, Type = nic.NetworkInterfaceType.ToString(), SpeedBitsPerSecond = nic.Speed, Status = nic.OperationalStatus.ToString() });
+        }
+        catch (NetworkInformationException ex) { info.Problems.Add("ネットワーク: " + ex.Message); }
+        info.FilterDrivers = FilterDriverList(info.Problems);
+        return info;
+    }
+    private static VolumeInfo Volume(string role, string path, string? unc)
+    {
+        var v = new VolumeInfo { Role = role, Path = path, UncPath = unc };
+        try
+        {
+            string target = unc ?? path;
+            if (target.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                var parts = target.TrimStart('\\').Split('\\');
+                v.Root = parts.Length >= 2 ? $@"\\{parts[0]}\{parts[1]}\" : target; v.DriveType = "Network";
+                var name = new char[261]; var fs = new char[261];
+                if (GetVolumeInformation(v.Root, name, name.Length, out _, out _, out _, fs, fs.Length)) { v.Label = new string(name).TrimEnd('\0'); v.FileSystem = new string(fs).TrimEnd('\0'); }
+                if (GetDiskFreeSpaceEx(v.Root, out long free, out long total, out _)) { v.FreeBytes = free; v.TotalBytes = total; }
+            }
+            if (!path.StartsWith(@"\\", StringComparison.Ordinal) && System.IO.Path.GetPathRoot(path) is { Length: > 0 } letter)
+            {
+                var d = new DriveInfo(letter);
+                v.Root = d.Name; v.DriveType = d.DriveType.ToString();
+                if (d.IsReady) { v.FileSystem = d.DriveFormat; v.Label = d.VolumeLabel; v.TotalBytes = d.TotalSize; v.FreeBytes = d.AvailableFreeSpace; }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { v.Error = ex.Message; }
+        return v;
+    }
+    // `fltmc filters` (administrator): the minifilter drivers and their altitudes, as the tool prints them.
+    private static List<string> FilterDriverList(List<string> problems)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "fltmc.exe"), "filters") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true });
+            if (p is null) return [];
+            var text = p.StandardOutput.ReadToEndAsync();
+            if (!p.WaitForExit(5000)) { p.Kill(); problems.Add("fltmc が応答しませんでした。"); return []; }
+            return text.Result.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException) { problems.Add("fltmc: " + ex.Message); return []; }
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool GetVolumeInformation(string root, char[] name, int nameLength, out uint serial, out uint maxComponent, out uint flags, char[] fileSystem, int fileSystemLength);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool GetDiskFreeSpaceEx(string directory, out long freeToCaller, out long total, out long totalFree);
+}
+
+// processes.jsonl: Running (already running when the recording started), Start, Stop, and Image (the program file and its
+// version, looked up once for each target process).
+public sealed class ProcessRecord
+{
+    public long TimeUs { get; set; }
+    public string Kind { get; set; } = "";
+    public int Pid { get; set; }
+    public int? ParentPid { get; set; }
+    public string? Name { get; set; }
+    public string? CommandLine { get; set; }
+    public int? SessionId { get; set; }
+    public int? ExitStatus { get; set; }
+    public string? ImagePath { get; set; }
+    public string? FileVersion { get; set; }
+    public string? ProductName { get; set; }
+    public string? ProductVersion { get; set; }
+}

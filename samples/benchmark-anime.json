@@ -1,0 +1,45 @@
+// IO Recorder ベンチマーク構成の例: アニメ制作（連番画像中心）を想定した仮の配分です。
+// 実際の配分は、制作PCで記録したセッションのレポート（拡張子別の転送量・要求サイズ分布）を見て調整してください。
+//
+// サイズは B / KiB / MiB / GiB / TiB（1024単位）と KB / MB / GB / TB（1000単位）で書けます。
+// 同じ構成・同じ seed なら、ファイル・順序・オフセット・サイズは毎回まったく同じI/O列になります。
+// seed は数字（42）でも文字列（"LucidLink試験A"）でも指定できます。
+{
+  "label": "アニメ制作想定 / 連番+動画+PSD",
+  "seed": 42,
+  "threads": 8,
+  // 計画全体で読み書きする量。ダミーファイルの総量とは別です。
+  "totalTransfer": "20GiB",
+  // 0 = 全速（各スレッドが前の要求の完了直後に次を発行）。値を入れるとその転送速度（MiB/s）で一定に投入します。
+  "rateMiBps": 0,
+  // 時間で決めるときは、totalTransfer を消して duration（例: "30m", "1h30m", "90s", "01:30:00"）を書きます。
+  // duration は rateMiBps（0より大きい値）と一緒に使い、合計量は rateMiBps × duration になります。
+  // 例: "rateMiBps": 50, "duration": "30m" → 50 MiB/s で30分（合計 約88 GiB）
+  // 全速（rateMiBps: 0）では試験先の速さで時間が変わるため、duration は使えません。
+
+  // 試験用のダミーファイル群。count 個のファイルを size ±sizeJitter（割合）のサイズで作ります。
+  // count が 0 の群は、wholeFile の write で新しく作るファイル（レンダリング出力など）の置き場として使えます。
+  "fileSets": [
+    { "name": "frames",  "count": 2400, "size": "8MiB",   "sizeJitter": 0.3 },
+    { "name": "video",   "count": 4,    "size": "1GiB" },
+    { "name": "psd",     "count": 20,   "size": "200MiB", "sizeJitter": 0.5 },
+    { "name": "renders", "count": 0,    "size": "8MiB",   "sizeJitter": 0.3 }
+  ],
+
+  // weight は転送量の比率です（回数の比率ではありません）。
+  // operation: read / write
+  // pattern:
+  //   sequential … ファイル内のランダムな位置から runLength 分を blockSize ずつ連続で読み書き
+  //   random     … ファイル内のランダムな位置に blockSize の読み書きを runLength / blockSize 回
+  //   wholeFile  … read はファイル全体を先頭から読む（連番画像の読み込み）
+  //                write は新しいファイルを作って size 分書く（レンダリング出力）
+  // fileOrder: random（ランダムに選ぶ）/ sequential（群の中を番号順に使う。連番の再生に近い）
+  "workloads": [
+    { "name": "連番の読み込み",       "weight": 40, "fileSet": "frames",  "operation": "read",  "pattern": "wholeFile",  "blockSize": "1MiB",   "fileOrder": "sequential" },
+    { "name": "動画のシーケンシャル読み", "weight": 15, "fileSet": "video",   "operation": "read",  "pattern": "sequential", "blockSize": "1MiB",   "runLength": "256MiB" },
+    { "name": "動画のランダム読み",     "weight": 10, "fileSet": "video",   "operation": "read",  "pattern": "random",     "blockSize": "256KiB", "runLength": "16MiB" },
+    { "name": "PSDのランダム読み",      "weight": 10, "fileSet": "psd",     "operation": "read",  "pattern": "random",     "blockSize": "64KiB",  "runLength": "8MiB" },
+    { "name": "レンダリング出力",       "weight": 20, "fileSet": "renders", "operation": "write", "pattern": "wholeFile",  "blockSize": "1MiB" },
+    { "name": "PSDの部分上書き",        "weight": 5,  "fileSet": "psd",     "operation": "write", "pattern": "random",     "blockSize": "64KiB",  "runLength": "4MiB" }
+  ]
+}
