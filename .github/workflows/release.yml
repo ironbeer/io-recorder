@@ -25,9 +25,10 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+      # The tag without its leading v must equal the Version in Directory.Build.props (build.ps1 stops otherwise).
       - name: Build, test and publish
         shell: pwsh
-        run: ./scripts/build.ps1
+        run: ./scripts/build.ps1 -Version ($env:TAG -replace '^v','')
       - name: Package
         shell: pwsh
         run: |
@@ -49,4 +50,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:TAG" "$env:ASSET" "$env:ASSET.sha256" --title "IO Recorder $env:TAG" --generate-notes --verify-tag
+        # A version with a suffix (v0.2.0-beta.1) is published as a pre-release.
+        run: |
+          $prerelease = if ($env:TAG -match '-') { @('--prerelease') } else { @() }
+          gh release create "$env:TAG" "$env:ASSET" "$env:ASSET.sha256" --title "IO Recorder $env:TAG" --generate-notes --verify-tag @prerelease
