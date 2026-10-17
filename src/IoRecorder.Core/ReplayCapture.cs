@@ -191,7 +191,7 @@ public sealed class ReplayComparison
         {
             if (!e.IsFileIo || !filter(e)) continue;
             metrics.Add(e);
-            if (!e.IsFastIoRefusal) { var op = e.Operation.ToString(); operations[op] = operations.GetValueOrDefault(op) + 1; }
+            if (!e.IsFastIoRefusal) { var op = SessionAnalyzer.OperationName(e); operations[op] = operations.GetValueOrDefault(op) + 1; }
         }
         var result = metrics.Snapshot(int.MaxValue); result.Operations = operations;
         return result;

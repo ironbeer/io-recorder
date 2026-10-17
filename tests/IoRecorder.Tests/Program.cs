@@ -553,6 +553,24 @@ await Test("analysis and replay: another process's I/O on the target's files is 
     Check(r.Failed==0 && r.ReadBytes==4096 && statuses[3]=="SkippedOtherProcess" && statuses[4]=="SkippedOtherProcess" && statuses[5]=="SkippedUnsupportedOperation",$"not replayed ({string.Join(", ",statuses.Values)})");
 });
 
+await Test("machine: Windows 11 is named by its build, and network filter layers are not counted as adapters",()=>
+{
+    Check(WindowsName.Of("Windows 10 Pro","26300")=="Windows 11 Pro" && WindowsName.Of("Windows 10 Pro","19045")=="Windows 10 Pro" && WindowsName.Of("Windows Server 2025 Datacenter","26100")=="Windows Server 2025 Datacenter","the product name");
+    string[] names=["イーサネット 3","イーサネット 3-WFP Native MAC Layer LightWeight Filter-0000","イーサネット 3-QoS Packet Scheduler-0000","Wi-Fi","Wi-Fi 2"];
+    Check(names.Where(n=>!NetworkAdapters.IsFilterLayer(n,names)).SequenceEqual(["イーサネット 3","Wi-Fi","Wi-Fi 2"]),"filter layers on top of an adapter are left out, an adapter named like another one is kept");
+    return Task.CompletedTask;
+});
+
+await Test("analysis: the operation counts keep the OS's paging reads and writes apart from the application's",()=>
+{
+    const string file=@"C:\work\clip.mov";
+    var events=new[] { Open(1,file,"A",100),Op(2,IoOperation.Read,file,"A",200,65536),Op(3,IoOperation.Read,file,"A",300,262144,0,flags:0x43),Op(4,IoOperation.Write,file,"A",400,4096),Op(5,IoOperation.Write,file,"A",500,65536,0,pid:4,flags:0x43),Op(6,IoOperation.Cleanup,file,"A",600) };
+    var a=SessionAnalyzer.Analyze(Session("operation-names",events,[new SizeObservation { Path=file,ObservedUs=1,Size=262144 }]));
+    Check(a.Operations["Read"]==1 && a.Operations["Read"+SessionAnalyzer.PagingSuffix]==1 && a.Operations["Write"]==1 && a.Operations["Write"+SessionAnalyzer.PagingSuffix]==1,
+        string.Join(", ",a.Operations.Select(p=>$"{p.Key}={p.Value}")));
+    return Task.CompletedTask;
+});
+
 await Test("machine: per-second samples and the environment are collected without administrator rights",()=>
 {
     var sampler=new SystemSampler();

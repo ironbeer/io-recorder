@@ -245,8 +245,9 @@ public sealed class AnalysisResult
 {
     // A saved analysis.json older than this is recomputed (2: per-second latency in the timeline; 3: access patterns; 4: write
     // patterns; 5: latency per file; 6: fast I/O refusals no longer counted as requests or failures, and a path not found below
-    // a file no longer makes that file a folder; 7: the exact span of application I/O).
-    public const int CurrentVersion = 7;
+    // a file no longer makes that file a folder; 7: the exact span of application I/O; 8: paging reads and writes counted
+    // apart from the application's in the operation counts).
+    public const int CurrentVersion = 8;
     public int Version { get; set; }
     public long TotalEvents { get; set; }
     public int FileCount { get; set; }

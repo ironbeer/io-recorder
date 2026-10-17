@@ -132,6 +132,12 @@ public sealed class LiveMetrics
 
 public static class SessionAnalyzer
 {
+    public const string PagingSuffix = "（ページングI/O）";
+    // The name an operation is counted under: reads and writes the OS does on its own (filling its cache, writing it back)
+    // are counted apart from the application's, since they depend on the cache rather than on what the application asked.
+    public static string OperationName(IoEvent e) =>
+        e.IsPagingIo && e.Operation is IoOperation.Read or IoOperation.Write ? e.Operation + PagingSuffix : e.Operation.ToString();
+
     // Reads events.jsonl twice: totals and file states first, then ranges (which need the first mutation of each file)
     // and, when asked, the read heat map of the most-read files.
     public static AnalysisResult Analyze(string session, bool heat = false)
@@ -157,7 +163,7 @@ public static class SessionAnalyzer
             if (!e.IsFileIo || e.IsFastIoRefusal || e.ByOtherProcess) continue;
             if (!e.Failed && e.Operation==IoOperation.Rename && !string.IsNullOrWhiteSpace(e.DestinationPath))
                 renamedInto[e.DestinationPath]=Math.Min(renamedInto.GetValueOrDefault(e.DestinationPath,long.MaxValue),e.StartUs);
-            var op = e.Operation.ToString(); operations[op] = operations.GetValueOrDefault(op) + 1;
+            var op = OperationName(e); operations[op] = operations.GetValueOrDefault(op) + 1;
             if (!string.IsNullOrWhiteSpace(e.Path))
             {
                 if (!first.TryGetValue(e.Path, out var f) || e.StartUs < f.StartUs) first[e.Path] = e;

@@ -38,11 +38,8 @@ public sealed class SystemSampler
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception) { }
         try
         {
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
-                var s = nic.GetIPStatistics(); sample.Network.Add(new(nic.Name, s.BytesReceived, s.BytesSent));
-            }
+            foreach (var nic in NetworkAdapters.List().Where(n => n.OperationalStatus == OperationalStatus.Up))
+            { var s = nic.GetIPStatistics(); sample.Network.Add(new(nic.Name, s.BytesReceived, s.BytesSent)); }
         }
         catch (NetworkInformationException) { }
         return sample;
@@ -62,6 +59,29 @@ public sealed class SystemSampler
     }
     [DllImport("kernel32.dll")] private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
     [DllImport("ntdll.dll")] internal static extern int NtQuerySystemInformation(int infoClass, nint buffer, int length, out int returned);
+}
+
+public static class NetworkAdapters
+{
+    // The adapters of the machine, without loopback, tunnels and the filter layers Windows lists as interfaces of their own
+    // ("Ethernet 3-WFP Native MAC Layer LightWeight Filter-0000" on top of "Ethernet 3"): those carry the same traffic as
+    // the adapter below them, and adding them up would count it several times.
+    public static List<NetworkInterface> List()
+    {
+        var all = NetworkInterface.GetAllNetworkInterfaces().Where(n => n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)).ToList();
+        var names = all.Select(n => n.Name).ToList();
+        return all.Where(n => !IsFilterLayer(n.Name, names)).ToList();
+    }
+    public static bool IsFilterLayer(string name, IReadOnlyCollection<string> names) =>
+        names.Any(other => other.Length < name.Length && name.StartsWith(other + "-", StringComparison.Ordinal));
+}
+
+// Windows 11 keeps "Windows 10" in the registry's product name; the build number tells them apart.
+public static class WindowsName
+{
+    public static string? Of(string? productName, string? build) =>
+        productName is not null && int.TryParse(build, out int number) && number >= 22000 && productName.StartsWith("Windows 10", StringComparison.Ordinal)
+            ? "Windows 11" + productName["Windows 10".Length..] : productName;
 }
 
 public static class Privileges
@@ -218,8 +238,9 @@ public sealed class EnvironmentInfo
         try
         {
             using var os = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
-            info.OsName = os?.GetValue("ProductName") as string; info.OsDisplayVersion = os?.GetValue("DisplayVersion") as string;
-            info.OsBuild = $"{os?.GetValue("CurrentBuild")}.{os?.GetValue("UBR")}";
+            string? build = os?.GetValue("CurrentBuild") as string;
+            info.OsName = WindowsName.Of(os?.GetValue("ProductName") as string, build); info.OsDisplayVersion = os?.GetValue("DisplayVersion") as string;
+            info.OsBuild = $"{build}.{os?.GetValue("UBR")}";
             using var cpu = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
             info.CpuModel = (cpu?.GetValue("ProcessorNameString") as string)?.Trim();
         }
@@ -228,7 +249,7 @@ public sealed class EnvironmentInfo
         info.Volumes.Add(Volume("記録の保存先", output, null));
         try
         {
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)))
+            foreach (var nic in IoRecorder.Core.NetworkAdapters.List())
                 info.NetworkAdapters.Add(new() { Name = nic.Name, Description = nic.Description, Type = nic.NetworkInterfaceType.ToString(), SpeedBitsPerSecond = nic.Speed, Status = nic.OperationalStatus.ToString() });
         }
         catch (NetworkInformationException ex) { info.Problems.Add("ネットワーク: " + ex.Message); }
