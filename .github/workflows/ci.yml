@@ -1,0 +1,27 @@
+# Builds the solution and runs the automated tests on every change to main and on pull requests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build
+        run: dotnet build IORecorder.sln -c Release --nologo
+      # CI=true (set by GitHub Actions) gives the timing test room for the shared machine's scheduling noise.
+      - name: Test
+        run: dotnet run --project tests/IoRecorder.Tests -c Release --no-build

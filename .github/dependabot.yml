@@ -1,0 +1,16 @@
+# Weekly update proposals for the NuGet packages, the .NET SDK pinned in global.json, and the GitHub Actions used by the
+# workflows (which are pinned to commit SHAs; Dependabot keeps the SHA and the version comment in step).
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: dotnet-sdk
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

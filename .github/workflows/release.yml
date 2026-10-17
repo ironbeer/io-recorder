@@ -1,0 +1,52 @@
+# Pushing a tag such as v0.2.0 builds the Windows distribution on GitHub's machine (tests included), packs it as a zip with
+# its SHA-256, records where it was built (build provenance, for public repositories) and publishes a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the build provenance
+      attestations: write # store the build provenance
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build, test and publish
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "IORecorder-$env:TAG-win-x64.zip"
+          Compress-Archive -Path dist/IORecorder-win-x64/* -DestinationPath $name
+          "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant())  $name" | Out-File -Encoding ascii "$name.sha256"
+          "ASSET=$name" >> $env:GITHUB_ENV
+      # Lets anyone check that the zip and the programs in it were built here from this repository's code:
+      #   gh attestation verify <file> -R <owner>/<repo>
+      - name: Build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            IORecorder-*-win-x64.zip
+            dist/IORecorder-win-x64/IORecorder.exe
+            dist/IORecorder-win-x64/cli/iorecorder-cli.exe
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:TAG" "$env:ASSET" "$env:ASSET.sha256" --title "IO Recorder $env:TAG" --generate-notes --verify-tag
