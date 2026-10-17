@@ -312,3 +312,7 @@ src\IoRecorder.App\bin\Release\net10.0-windows\IORecorder.exe --smoke-test artif
 - [Microsoft TraceEvent / PerfView](https://github.com/microsoft/perfview)
 - [LucidLink perf CLI](https://developer.lucidlink.com/docs/cli/reference/perf)
 - [.NET SDKのインストール](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script)
+
+## ライセンス
+
+[MIT License](LICENSE)。使っている部品（TraceEvent・.NETなど）のライセンスは [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) と `licenses/` にあります。

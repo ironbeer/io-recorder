@@ -21,6 +21,7 @@ try {
     & $sdk publish src/IoRecorder.Cli/IoRecorder.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=None -o (Join-Path $output 'cli') --nologo
     if ($LASTEXITCODE -ne 0) { throw 'CLI publish failed.' }
     Copy-Item -LiteralPath (Join-Path $workspace 'README.md') -Destination (Join-Path $output 'README.md')
+    Copy-Item -LiteralPath (Join-Path $workspace 'LICENSE') -Destination (Join-Path $output 'LICENSE.txt')
     Copy-Item -LiteralPath (Join-Path $workspace 'THIRD-PARTY-NOTICES.md') -Destination (Join-Path $output 'THIRD-PARTY-NOTICES.md')
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'verify-etw.ps1') -Destination (Join-Path $output 'verify-etw.ps1')
     Copy-Item -LiteralPath (Join-Path $workspace 'Verify ETW.cmd') -Destination (Join-Path $output 'Verify ETW.cmd')
