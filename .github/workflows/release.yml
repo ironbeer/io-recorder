@@ -46,7 +46,7 @@ jobs:
           subject-path: |
             IORecorder-*-win-x64.zip
             dist/IORecorder-win-x64/IORecorder.exe
-            dist/IORecorder-win-x64/cli/iorecorder-cli.exe
+            dist/IORecorder-win-x64/iorecorder-cli.exe
       - name: Publish the release
         shell: pwsh
         env:

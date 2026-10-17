@@ -27,8 +27,11 @@ try {
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     & $sdk publish src/IoRecorder.App/IoRecorder.App.csproj -c Release -r win-x64 --self-contained true -p:DebugType=None -o $output --nologo @versionArgs
     if ($LASTEXITCODE -ne 0) { throw 'GUI publish failed.' }
-    & $sdk publish src/IoRecorder.Cli/IoRecorder.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=None -o (Join-Path $output 'cli') --nologo @versionArgs
+    # The CLI goes next to the GUI and uses the same .NET runtime files (identical versions), instead of a second copy.
+    & $sdk publish src/IoRecorder.Cli/IoRecorder.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=None -o $output --nologo @versionArgs
     if ($LASTEXITCODE -ne 0) { throw 'CLI publish failed.' }
+    # TraceEvent ships its native helpers for every CPU; this build is x64 only, so only amd64 is used.
+    foreach ($arch in 'arm64', 'x86') { $folder = Join-Path $output $arch; if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force } }
     Copy-Item -LiteralPath (Join-Path $workspace 'README.md') -Destination (Join-Path $output 'README.md')
     Copy-Item -LiteralPath (Join-Path $workspace 'LICENSE') -Destination (Join-Path $output 'LICENSE.txt')
     Copy-Item -LiteralPath (Join-Path $workspace 'THIRD-PARTY-NOTICES.md') -Destination (Join-Path $output 'THIRD-PARTY-NOTICES.md')

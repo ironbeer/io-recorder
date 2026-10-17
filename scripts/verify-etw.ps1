@@ -8,8 +8,8 @@ if (-not $isAdmin) {
     Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments
     exit
 }
-$candidate = Join-Path $PSScriptRoot 'cli\iorecorder-cli.exe'
-if (-not (Test-Path -LiteralPath $candidate)) { $candidate = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\IORecorder-win-x64\cli\iorecorder-cli.exe' }
+$candidate = Join-Path $PSScriptRoot 'iorecorder-cli.exe'
+if (-not (Test-Path -LiteralPath $candidate)) { $candidate = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\IORecorder-win-x64\iorecorder-cli.exe' }
 if (-not (Test-Path -LiteralPath $candidate)) { throw '実行ファイルがありません。先にビルドしてください。' }
 if (-not $Output) { $Output = Join-Path ([Environment]::GetFolderPath('MyDocuments')) ('IORecorder\Verification\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '_verify-etw') }
 New-Item -ItemType Directory -Force -Path $Output | Out-Null

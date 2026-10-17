@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
+    <!-- Translations of .NET and WPF messages: only Japanese (the UI is Japanese); without this, 13 language folders ship. -->
+    <SatelliteResourceLanguages>ja</SatelliteResourceLanguages>
     <Version>0.1.0</Version>
     <Authors>ironbeer</Authors>
     <Copyright>Copyright (c) 2026 ironbeer. MIT License.</Copyright>

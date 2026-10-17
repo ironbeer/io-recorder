@@ -252,7 +252,7 @@ replay-*-timeline.csv ベンチマークの実行結果のみ: 1秒ごとのRead
 
 ## CLI
 
-配布フォルダの `cli` 内に `iorecorder-cli.exe` とCLI用ランタイムがあります。以下はそのフォルダで実行する例です。
+配布フォルダに `iorecorder-cli.exe` があります（GUIと同じ.NETのランタイムを使います）。以下はそのフォルダで実行する例です。
 
 ```powershell
 # 管理者PowerShell: After Effectsと制作フォルダを30秒記録
