@@ -34,7 +34,8 @@ jobs:
         run: |
           $name = "IORecorder-$env:TAG-win-x64.zip"
           Compress-Archive -Path dist/IORecorder-win-x64/* -DestinationPath $name
-          "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant())  $name" | Out-File -Encoding ascii "$name.sha256"
+          # One line ending in LF, as sha256sum -c expects (Out-File would end it with CR LF).
+          [IO.File]::WriteAllText("$PWD/$name.sha256", "$((Get-FileHash $name -Algorithm SHA256).Hash.ToLowerInvariant())  $name`n")
           "ASSET=$name" >> $env:GITHUB_ENV
       # Lets anyone check that the zip and the programs in it were built here from this repository's code:
       #   gh attestation verify <file> -R <owner>/<repo>
