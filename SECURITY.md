@@ -2,9 +2,9 @@
 
 ## 脆弱性の報告
 
-脆弱性を見つけた場合は、公開のIssueには書かず、このリポジトリの **Security** タブの **Report a vulnerability**（GitHubの非公開の報告）から知らせてください。再現手順・影響・確認したバージョンがあると助かります。受け取ったら内容を確認して返信し、修正したら更新履歴でお知らせします。
+脆弱性を見つけた場合は、公開のIssueには書かず、このリポジトリの **Security** タブの **Report a vulnerability**（GitHubの非公開の報告: https://github.com/ironbeer/io-recorder/security/advisories/new ）から知らせてください。再現手順・影響・確認したバージョンがあると助かります。受け取ったら内容を確認して返信し、修正したら更新履歴でお知らせします。
 
-Please report vulnerabilities privately through **Security → Report a vulnerability** on this repository, not in public issues.
+Please report security vulnerabilities privately through GitHub's private vulnerability reporting (https://github.com/ironbeer/io-recorder/security/advisories/new), not in public issues. Include the steps to reproduce, the impact and the version you checked if you can. We will confirm the report, keep you informed while we work on a fix, and disclose the issue in a security advisory and the release notes once a fixed release is available.
 
 ## 対象
 
@@ -26,4 +26,10 @@ v0.4.0以降のリリースでは、zipと中の実行ファイル（`IORecorder
 
 ```bash
 gh attestation verify IORecorder-v0.4.0-win-x64.zip -R ironbeer/io-recorder
+```
+
+同じ証明をリリースのファイル（`IORecorder-v0.4.0-provenance.sigstore.json`）としても添えているので、GitHubのAPIを使わずに確かめることもできます。
+
+```bash
+gh attestation verify IORecorder-v0.4.0-win-x64.zip --bundle IORecorder-v0.4.0-provenance.sigstore.json -R ironbeer/io-recorder
 ```

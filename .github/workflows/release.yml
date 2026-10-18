@@ -40,6 +40,7 @@ jobs:
       # Lets anyone check that the zip and the programs in it were built here from this repository's code:
       #   gh attestation verify <file> -R <owner>/<repo>
       - name: Build provenance
+        id: provenance
         if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -51,7 +52,12 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         # A version with a suffix (v0.2.0-beta.1) is published as a pre-release.
         run: |
           $prerelease = if ($env:TAG -match '-') { @('--prerelease') } else { @() }
-          gh release create "$env:TAG" "$env:ASSET" "$env:ASSET.sha256" --title "IO Recorder $env:TAG" --generate-notes --verify-tag @prerelease
+          $assets = @($env:ASSET, "$env:ASSET.sha256")
+          # The provenance as a Sigstore bundle beside the zip, to check it without GitHub's API:
+          #   gh attestation verify <zip> --bundle <bundle> -R <owner>/<repo>
+          if ($env:BUNDLE) { $bundle = "IORecorder-$env:TAG-provenance.sigstore.json"; Copy-Item $env:BUNDLE $bundle; $assets += $bundle }
+          gh release create "$env:TAG" @assets --title "IO Recorder $env:TAG" --generate-notes --verify-tag @prerelease
