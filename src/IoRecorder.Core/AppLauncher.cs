@@ -74,6 +74,21 @@ public static class AppLauncher
         finally { if(instance is not null) Marshal.ReleaseComObject(instance); }
     }
 
+    // Writes a shortcut to an application (Unicode names and paths, as the Start menu has them).
+    internal static void SaveShortcut(string shortcut,AppLaunch app)
+    {
+        object instance=new ShellLink();
+        try
+        {
+            var link=(IShellLinkW)instance;
+            link.SetPath(app.Path);
+            if(app.Arguments is { } arguments) link.SetArguments(arguments);
+            if(app.WorkingDirectory is { } directory) link.SetWorkingDirectory(directory);
+            ((IPersistFile)instance).Save(shortcut,true);
+        }
+        finally { Marshal.ReleaseComObject(instance); }
+    }
+
     // The programs running now, one entry per program file: the ones with a window first. Programs whose file cannot be read
     // (protected system processes) are left out; they cannot be chosen as an application.
     public static List<RunningProgram> Running()
