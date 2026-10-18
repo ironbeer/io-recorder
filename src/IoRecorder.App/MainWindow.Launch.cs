@@ -60,9 +60,10 @@ public partial class MainWindow
         DockPanel.SetDock(buttons,Dock.Bottom); panel.Children.Add(buttons); panel.Children.Add(list);
         var dialog=new Window { Owner=this,Title="計測対象のアプリケーションを選択",Width=620,Height=680,WindowStartupLocation=WindowStartupLocation.CenterOwner,Content=panel,Icon=Icon,ShowInTaskbar=false };
         DarkTitleBar.Apply(dialog);
-        void Choose(AppLaunch app) { SetLaunchApp(app); SaveSettings(); dialog.Close(); }
-        pick.Click+=(s,args)=>{ if(list.SelectedItem is AppItem item) Choose(item.App); };
-        list.MouseDoubleClick+=(s,args)=>{ if(list.SelectedItem is AppItem item) Choose(item.App); };
+        // A program chosen while it runs is not started for the recording unless asked (it would have to be closed first).
+        void Choose(AppLaunch app,bool runningNow=false) { LaunchBox.IsChecked=!runningNow; SetLaunchApp(app); SaveSettings(); dialog.Close(); }
+        pick.Click+=(s,args)=>{ if(list.SelectedItem is AppItem item) Choose(item.App,current==1); };
+        list.MouseDoubleClick+=(s,args)=>{ if(list.SelectedItem is AppItem item) Choose(item.App,current==1); };
         browse.Click+=(s,args)=>
         {
             var d=new OpenFileDialog { Title="計測対象のアプリケーション（プログラムかショートカット）",Filter="プログラム・ショートカット (*.exe;*.lnk)|*.exe;*.lnk",InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles) };
@@ -129,7 +130,10 @@ public partial class MainWindow
         LaunchBox.IsEnabled=chosen;
         AppButton.Content=chosen?"キャンセル":"アプリを選ぶ…";
         AppButton.ToolTip=chosen?"このアプリを測るのをやめます。別のアプリにするときは、キャンセルしてから選び直します。":null;
-        StartButton.Content=chosen && LaunchBox.IsChecked==true?"●  計測を開始してアプリを起動":"●  計測を開始";
+        bool launch=chosen && LaunchBox.IsChecked==true;
+        StartButton.Content=launch?"●  計測を開始してアプリを起動":"●  計測を開始";
+        LaunchNote.Text=launch?"アプリを閉じた状態で「計測を開始してアプリを起動」を押してください。":"起動中のアプリをそのまま記録します（起動したときの読み込みは入りません）。";
+        LaunchNote.Visibility=chosen?Visibility.Visible:Visibility.Collapsed;
         UpdateLabelHint();
     }
 }

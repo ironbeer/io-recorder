@@ -20,7 +20,7 @@
           <Border Background="{StaticResource Input}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Padding="10,8"><DockPanel><Image x:Name="AppIcon" Width="24" Height="24" Margin="0,0,10,0" DockPanel.Dock="Left" VerticalAlignment="Center" Visibility="Collapsed"/><TextBlock x:Name="AppText" Text="未選択" TextWrapping="Wrap" FontSize="12" VerticalAlignment="Center"/></DockPanel></Border>
           <Button x:Name="AppButton" Content="アプリを選ぶ…" Padding="10,7" Margin="0,6,0,0" HorizontalAlignment="Left" Click="AppButtonClick"/>
           <CheckBox x:Name="LaunchBox" IsChecked="True" IsEnabled="False" Content="計測を始めたら、このアプリを起動する" Margin="0,8,0,0" Checked="LaunchChanged" Unchecked="LaunchChanged"/>
-          <TextBlock Text="アプリを閉じた状態で「計測を開始」を押してください。" TextWrapping="Wrap" FontSize="11" Foreground="#8498B8" Margin="0,6,0,0"/>
+          <TextBlock x:Name="LaunchNote" Text="" Visibility="Collapsed" TextWrapping="Wrap" FontSize="11" Foreground="#8498B8" Margin="0,6,0,0"/>
           <TextBlock Text="対象フォルダ / ドライブ（任意・1行に1つ）" Style="{StaticResource Caption}"/>
           <TextBox x:Name="RootsBox" Height="70" AcceptsReturn="True" TextWrapping="Wrap" Tag="例: L:\Production または \\server\share"/>
           <Button Content="対象フォルダを追加…" Margin="0,6,0,0" Click="BrowseRoot"/>
