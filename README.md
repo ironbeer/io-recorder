@@ -4,7 +4,14 @@ WindowsアプリのファイルI/OをETWで記録し、元ファイルを持ち�
 
 ## 起動
 
-`Start IORecorder.cmd` または `dist\IORecorder-win-x64\IORecorder.exe` をダブルクリックします。配布フォルダには.NETランタイムを含むので、利用するPCにSDKやVisual Studioをインストールする必要はありません。Windows 11 x64向けです。
+[Releases](https://github.com/ironbeer/io-recorder/releases) から `IORecorder-v…-win-x64.zip` をダウンロードして展開し、中の `IORecorder.exe` をダブルクリックします（ソースからビルドした場合は `Start IORecorder.cmd` か `dist\IORecorder-win-x64\IORecorder.exe`）。.NETランタイムを含むので、利用するPCにSDKやVisual Studioをインストールする必要はありません。Windows 11 x64向けです。
+
+IO Recorderはコード署名をしていないので、インターネットからダウンロードしたzipをそのまま展開すると、起動したときにWindowsが「WindowsによってPCが保護されました」（Microsoft Defender SmartScreen）と出して止めます。次のどちらかで起動できます。
+
+- **展開する前に、ダウンロードの印を外す（おすすめ）**: zipを右クリック →「プロパティ」→「全般」タブの下の「セキュリティ」で「許可する」にチェック →「OK」。そのあとで展開すると、この警告は出ません。PowerShellなら `Unblock-File .\IORecorder-v0.4.0-win-x64.zip` でも同じです。ほかの人に配るときも、この手順を添えてください。
+- **警告が出てから起動する**: 「詳細情報」を押すと出る「実行」を押します（発行元は「不明な発行元」と表示されます）。
+
+どちらも、ダウンロードしたzipが本物であることを確かめてから行ってください。確かめ方（SHA-256と、v0.4.0以降のビルドの来歴の証明）は [SECURITY.md](SECURITY.md#配布物の確かめ方) にあります。
 
 GUIはETW計測のため**常に管理者として起動**します（起動のたびにWindowsのUAC確認が出ます。承認は利用者が操作してください）。常駐サービス・独自ドライバー・対象アプリへのDLL注入は使用しません。CLIは `record` だけが管理者権限を必要とし、`generate` / `replay` / `bench` などは通常権限で動きます。
 
