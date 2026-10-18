@@ -17,6 +17,9 @@ public sealed class RecordingOptions
     // Executable names, matched exactly (case-insensitive, with or without ".exe").
     public string[] ProcessNames { get; set; } = [];
     public int[] ProcessIds { get; set; } = [];
+    // Processes whose program file is in one of these folders are targets too, whoever started them (the other programs
+    // installed with the chosen application: AppLauncher.InstallFolder).
+    public string[] ProgramFolders { get; set; } = [];
     public string[] Roots { get; set; } = [];
     // Resolved by the unelevated caller when possible: an elevated token may not see the user's drive letters.
     public ResolvedRoot[] ResolvedRoots { get; set; } = [];
@@ -45,7 +48,8 @@ public sealed class RecordingOptions
             if (Mode == CaptureMode.Folder) Mode = CaptureMode.Hybrid;
         }
         ProcessNames = ProcessNames.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-        bool processes = ProcessNames.Length > 0 || ProcessIds.Length > 0, roots = Roots.Any(r => !string.IsNullOrWhiteSpace(r));
+        ProgramFolders = ProgramFolders.Where(f => !string.IsNullOrWhiteSpace(f)).Select(f => Path.TrimEndingDirectorySeparator(Path.GetFullPath(f))).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        bool processes = ProcessNames.Length > 0 || ProcessIds.Length > 0 || ProgramFolders.Length > 0, roots = Roots.Any(r => !string.IsNullOrWhiteSpace(r));
         if (Mode == CaptureMode.Process && !processes)
             throw new ArgumentException("対象プロセス名またはPIDを指定してください。");
         if (Mode == CaptureMode.Folder && !roots)

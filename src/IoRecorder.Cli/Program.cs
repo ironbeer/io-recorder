@@ -42,6 +42,8 @@ internal static class Cli
                 {
                     var app=AppLauncher.FromFile(Path.GetFullPath(launch)) ?? throw new ArgumentException("--launch のアプリが見つかりません: "+launch);
                     if(a.Optional("launch-args") is { } extra) app.Arguments=extra;
+                    // The other programs installed with it are followed too (a launcher's program, a helper started by another process).
+                    if(AppLauncher.InstallFolder(app.Path) is { } folder) options.ProgramFolders=[folder];
                     if(AppLauncher.IsRunning(app)) { Console.WriteLine($"注意: {app.Name}（{app.ProcessName}）はもう起動しているので、起動はしません。起動したときの読み込みは記録に入りません。"); options.ProcessNames=[.. options.ProcessNames,app.ProcessName]; }
                     else options.Launch=app;
                 }

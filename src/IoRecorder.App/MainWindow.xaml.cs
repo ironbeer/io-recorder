@@ -37,7 +37,7 @@ public partial class MainWindow : Window
         LoadSettings(); InitBench(); UpdateLaunchUi();
         AdminStatus.Text=EtwRecorder.IsAdministrator?"管理者で実行中":"通常権限（計測はできません）";
         VersionText.Text=$"v{ToolVersion.Text} · Windows x64";
-        ProcessBox.TextChanged+=(s,e)=>UpdateLabelHint(); RootsBox.TextChanged+=(s,e)=>UpdateLabelHint(); UpdateLabelHint();
+        RootsBox.TextChanged+=(s,e)=>UpdateLabelHint(); UpdateLabelHint();
         ChainWheel(LiveFiles); ChainWheel(ResultFiles); ChainWheel(EventGrid); ChainWheel(PatternGrid); ChainWheel(WriteGrid); ChainWheel(ChunkGrid); ChainWheel(CompareFilesGrid);
         // Recording the replay needs ETW, so administrator rights.
         if(!EtwRecorder.IsAdministrator) { RecordReplayBox.IsChecked=false; RecordReplayBox.IsEnabled=false; RecordReplayBox.ToolTip="管理者権限で起動したときだけ使えます（ETWで記録するため）。"; }
@@ -95,14 +95,17 @@ public partial class MainWindow : Window
     private static string[] Split(string text)=>text.Split([';','\r','\n'],StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries);
     private RecordingOptions ReadOptions()
     {
-        var processes=Split(ProcessBox.Text);
+        var roots=Split(RootsBox.Text); var app=_launchApp;
+        if(app is null && roots.Length==0) throw new ArgumentException("計測対象のアプリケーションか、対象フォルダを指定してください。");
         return new()
         {
-            Mode=(CaptureMode)Math.Max(0,ModeBox.SelectedIndex),
-            ProcessNames=processes.Where(p=>!p.StartsWith('#')).ToArray(),
-            ProcessIds=processes.Where(p=>p.StartsWith('#')).Select(p=>int.TryParse(p[1..],out var pid) && pid>0?pid:throw new FormatException($"PIDは #1234 の形で入力してください（入力: \"{p}\"）。")).ToArray(),
+            // What is recorded follows from what is given: the application, the folders, or both (either one is enough).
+            Mode=app is null?CaptureMode.Folder:roots.Length==0?CaptureMode.Process:CaptureMode.Hybrid,
+            // The application's program, the processes it starts and the other programs installed with it.
+            ProcessNames=app is null?Array.Empty<string>():new[] { app.ProcessName },IncludeChildren=true,
+            ProgramFolders=app is not null && AppLauncher.InstallFolder(app.Path) is { } folder?new[] { folder }:Array.Empty<string>(),
             // Size probing stays on in the GUI; the CLI keeps --no-size-probe for special cases.
-            Roots=Split(RootsBox.Text),IncludeChildren=ChildrenBox.IsChecked==true,ProbeSizes=true,
+            Roots=roots,ProbeSizes=true,
             LucidExecutable=string.IsNullOrWhiteSpace(LucidBox.Text)?null:LucidBox.Text.Trim(),
             LucidInstance=string.IsNullOrWhiteSpace(LucidIdBox.Text)?null:LucidIdBox.Text.Trim()
         };
@@ -121,11 +124,10 @@ public partial class MainWindow : Window
                     var answer=MessageBox.Show(this,$"{app.Name} はもう起動しています。このまま記録すると、起動したときの読み込み（前回のプロジェクトや素材の一覧など）は記録に入りません。\n\nこのまま記録を始めますか？\n\n「いいえ」で中止します。{app.Name} を終了してから、もう一度「計測を開始」を押してください。",
                         "IO Recorder",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No);
                     if(answer!=MessageBoxResult.Yes) return;
-                    if(!options.ProcessNames.Contains(app.ProcessName,StringComparer.OrdinalIgnoreCase)) options.ProcessNames=[.. options.ProcessNames,app.ProcessName];
                 }
                 else options.Launch=app;
             }
-            string subject=Subject(options.ProcessNames.Concat(options.Launch is { } started?new[] { started.ProcessName }:Array.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase),options.ProcessIds,options.Roots);
+            string subject=Subject(options.ProcessNames,options.ProcessIds,options.Roots);
             string typed=LabelBox.Text.Trim(),label=typed.Length>0?typed:AutoLabel(subject);
             // Folder: Recordings\yyyyMMdd-HHmmss_<label or what is measured>.
             string output=AppPaths.NewFolder(AppPaths.Recordings,typed.Length>0?typed:subject);
@@ -150,12 +152,7 @@ public partial class MainWindow : Window
     }
     // An empty label becomes "yyyy/MM/dd <subject>試験" when recording starts; the box shows what it will be.
     private static string AutoLabel(string subject)=>$"{DateTime.Now.ToString("yyyy/MM/dd",CultureInfo.InvariantCulture)} {(subject.Length>0?subject+"試験":"計測試験")}";
-    private void UpdateLabelHint()
-    {
-        var items=Split(ProcessBox.Text);
-        var pids=items.Where(p=>p.StartsWith('#') && int.TryParse(p[1..],out _)).Select(p=>int.Parse(p[1..]));
-        LabelBox.Tag="空欄なら「"+AutoLabel(Subject(items.Where(p=>!p.StartsWith('#')),pids,Split(RootsBox.Text)))+"」";
-    }
+    private void UpdateLabelHint()=>LabelBox.Tag="空欄なら「"+AutoLabel(Subject(_launchApp is { } app?new[] { app.ProcessName }:Array.Empty<string>(),Array.Empty<int>(),Split(RootsBox.Text)))+"」";
     private void OpenStorage(object sender,RoutedEventArgs e)
     {
         try { Directory.CreateDirectory(AppPaths.Root); Process.Start(new ProcessStartInfo(AppPaths.Root) { UseShellExecute=true }); }
@@ -412,28 +409,12 @@ public partial class MainWindow : Window
         catch(Exception ex) { ReportError(ex);StatusBadge.Text="●  ERROR"; }
         finally { FinishWork(); }
     }
-    private void ChooseProcess(object sender,RoutedEventArgs e)
-    {
-        var all=new List<ProcessItem>();
-        foreach(var p in Process.GetProcesses().OrderBy(p=>p.ProcessName,StringComparer.OrdinalIgnoreCase))
-        { try { all.Add(new ProcessItem(p.Id,p.ProcessName)); } catch { } finally { p.Dispose(); } }
-        var list=new ListBox { BorderThickness=new Thickness(0),Margin=new Thickness(8,8,8,0),ItemsSource=all };
-        var filter=new TextBox { Margin=new Thickness(12,12,12,0),Tag="プロセス名またはPIDで絞り込み" };
-        filter.TextChanged+=(s,args)=>{ string q=filter.Text.Trim(); list.ItemsSource=q.Length==0?all:all.Where(p=>p.Name.Contains(q,StringComparison.OrdinalIgnoreCase) || p.Pid.ToString().Contains(q)).ToList(); };
-        var pick=new Button { Content="このプロセスを指定",Margin=new Thickness(12),Style=(Style)FindResource("Primary") };
-        var panel=new DockPanel();DockPanel.SetDock(filter,Dock.Top);DockPanel.SetDock(pick,Dock.Bottom);panel.Children.Add(filter);panel.Children.Add(pick);panel.Children.Add(list);
-        var dialog=new Window { Owner=this,Title="実行中のプロセス",Width=460,Height=600,WindowStartupLocation=WindowStartupLocation.CenterOwner,Content=panel,Icon=Icon,ShowInTaskbar=false };
-        dialog.Loaded+=(s,args)=>filter.Focus();
-        DarkTitleBar.Apply(dialog); list.MouseDoubleClick+=(s,args)=>pick.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-        pick.Click+=(s,args)=>{ if(list.SelectedItem is ProcessItem item) { ProcessBox.Text="#"+item.Pid;dialog.Close(); } };
-        dialog.ShowDialog();
-    }
     private void SaveSettings()
     {
         // Smoke tests fill the form with demo values; they must never overwrite the user's settings.
         if(_args.Contains("--smoke-test")) return;
         Directory.CreateDirectory(AppPaths.Root);
-        JsonStore.Write(AppPaths.SettingsFile,new Settings { Mode=ModeBox.SelectedIndex,Processes=ProcessBox.Text,Roots=RootsBox.Text,Label=LabelBox.Text,Children=ChildrenBox.IsChecked==true,Lucid=LucidBox.Text,LucidId=LucidIdBox.Text,
+        JsonStore.Write(AppPaths.SettingsFile,new Settings { Roots=RootsBox.Text,Label=LabelBox.Text,Lucid=LucidBox.Text,LucidId=LucidIdBox.Text,
             ReplayTarget=TargetBox.Text,BenchConfig=BenchConfigBox.Text,BenchTarget=BenchTargetBox.Text,LaunchApp=_launchApp,Launch=LaunchBox.IsChecked==true });
     }
     private void LoadSettings()
@@ -441,8 +422,8 @@ public partial class MainWindow : Window
         if(!File.Exists(AppPaths.SettingsFile) || _args.Contains("--smoke-test")) return;
         try
         {
-            var s=JsonStore.Read<Settings>(AppPaths.SettingsFile);ModeBox.SelectedIndex=Math.Clamp(s.Mode,0,2);ProcessBox.Text=s.Processes;RootsBox.Text=s.Roots;
-            LabelBox.Text=s.Label;ChildrenBox.IsChecked=s.Children;LucidBox.Text=s.Lucid;LucidIdBox.Text=s.LucidId;
+            var s=JsonStore.Read<Settings>(AppPaths.SettingsFile);RootsBox.Text=s.Roots;
+            LabelBox.Text=s.Label;LucidBox.Text=s.Lucid;LucidIdBox.Text=s.LucidId;
             TargetBox.Text=s.ReplayTarget;BenchConfigBox.Text=s.BenchConfig;BenchTargetBox.Text=s.BenchTarget;
             // The chosen application is kept while its program is still installed; the process box keeps what was saved.
             LaunchBox.IsChecked=s.Launch; _launchApp=s.LaunchApp is { } app && File.Exists(app.Path)?app:null;
@@ -514,7 +495,7 @@ public partial class MainWindow : Window
         // The two dialogs, shown without waiting for them and rendered on their own.
         async Task CaptureDialog(Window dialog,string name)
         {
-            dialog.Show(); await Task.Delay(1500); dialog.UpdateLayout();
+            dialog.Show(); await Task.Delay(3000); dialog.UpdateLayout();
             var root=(FrameworkElement)dialog.Content;
             var image=new RenderTargetBitmap(Math.Max(1,(int)root.ActualWidth),Math.Max(1,(int)root.ActualHeight),96,96,PixelFormats.Pbgra32);
             var drawing=new DrawingVisual();
@@ -525,7 +506,7 @@ public partial class MainWindow : Window
         }
         if(LocationDialog(SessionAnalyzer.Load(demo),LocationFilter.Of([@"D:\Production\scene_001\frames"])).Dialog is not { } places) throw new InvalidDataException("UI実行時の場所の画面を作れませんでした。");
         await CaptureDialog(places,"locations-dialog");
-        await CaptureDialog(AppDialog(),"app-dialog");
+        await CaptureDialog(AppDialog(),"app-dialog"); await CaptureDialog(AppDialog(1),"app-dialog-running");
         EventFilter.Text="SetEndOfFile";await RefreshEvents();
         if(EventGrid.Items.Count!=1) throw new InvalidDataException("イベント検索の結果が不正です。");
         string dataset=Path.Combine(output,"ui-dataset-"+Guid.NewGuid().ToString("N")[..6]);TargetBox.Text=dataset;
@@ -549,12 +530,11 @@ public partial class MainWindow : Window
         await Capture("benchmark");
         JsonStore.Write(Path.Combine(output,"ui-verification.json"),new { passed=true,rasterPreviewAvailable=rasterAvailable,events=_analysis?.TotalEvents,result.Executed,result.Failed,result.ReadBytes,result.WriteBytes,benchmark=BenchTotal.Text });
     }
-    private sealed record ProcessItem(int Pid,string Name) { public override string ToString()=>$"{Name}    (PID {Pid})"; }
     private sealed record EventRow(double Seconds,string Operation,string Path,long Bytes,string Process,int Pid,long Offset,uint? Status);
     private sealed class Settings
     {
-        public int Mode {get;set;}=2;public string Processes {get;set;}="";public string Roots {get;set;}="";public string Label {get;set;}="";
-        public bool Children {get;set;}=true;public string Lucid {get;set;}="";public string LucidId {get;set;}="";
+        public string Roots {get;set;}="";public string Label {get;set;}="";
+        public string Lucid {get;set;}="";public string LucidId {get;set;}="";
         public string ReplayTarget {get;set;}="";public string BenchConfig {get;set;}="";public string BenchTarget {get;set;}="";
         public AppLaunch? LaunchApp {get;set;} public bool Launch {get;set;}=true;
     }

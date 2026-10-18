@@ -808,7 +808,7 @@ await Test("process tracking: children stay recorded after their parent ends; a 
 {
     // Running at the start: the application (10), its helper (11) and the helper's child (12). 30 names 10 as its parent but
     // started before it, so that PID belonged to another process then.
-    var running=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"] },[(10,"AfterFX.exe",1,100),(11,"helper.exe",10,200),(12,"render.exe",11,250),(30,"old.exe",10,50)]);
+    var running=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"] },[(10,"AfterFX.exe",1,100,null),(11,"helper.exe",10,200,null),(12,"render.exe",11,250,null),(30,"old.exe",10,50,null)]);
     Check(running.Matches(10)&&running.Matches(11)&&running.Matches(12),"the application, its child and grandchild");
     Check(!running.Matches(30),"a process whose parent PID was reused");
     // A launcher (a target by name) starts the main program and ends; the program then starts a renderer.
@@ -819,8 +819,28 @@ await Test("process tracking: children stay recorded after their parent ends; a 
     started.Started(40,"Unrelated.exe",1); started.Started(43,"Child.exe",40);
     Check(!started.Matches(40)&&!started.Matches(43),"a reused PID");
     Check(started.TargetPids().Order().SequenceEqual(new[] { 41,42 }),"targets: "+string.Join(",",started.TargetPids()));
-    var alone=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"],IncludeChildren=false },[(10,"AfterFX.exe",1,100),(11,"helper.exe",10,200)]);
+    var alone=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"],IncludeChildren=false },[(10,"AfterFX.exe",1,100,null),(11,"helper.exe",10,200,null)]);
     Check(alone.Matches(10)&&!alone.Matches(11),"without children");
+    return Task.CompletedTask;
+});
+
+await Test("process tracking: the programs installed with the application are followed whoever starts them; shared folders are not used",()=>
+{
+    const string folder=@"C:\Program Files\Adobe\Adobe After Effects 2025\Support Files";
+    var options=new RecordingOptions { ProcessNames=["AfterFX"],ProgramFolders=[folder] };
+    // Running at the start: a renderer of the application started by another program (not a child of the application).
+    var tracker=new ProcessTracker(options,[(5,"svchost.exe",1,10,@"C:\Windows\System32\svchost.exe"),(50,"aerender.exe",5,300,folder+@"\aerender.exe"),(60,"other.exe",5,300,@"C:\Program Files\Other\other.exe")]);
+    Check(tracker.FollowsFolders && tracker.Matches(50) && !tracker.Matches(60) && !tracker.Matches(5),"a program in the folder, whoever started it");
+    tracker.Started(70,"AEGPUSniffer.exe",5,folder+@"\AEGPUSniffer.exe"); tracker.Started(71,"Support Files Helper.exe",5,folder+@" Helper\x.exe");
+    Check(tracker.Matches(70) && !tracker.Matches(71),"a program started later in the folder; a folder that only starts with the same name is another folder");
+    Check(AppLauncher.ProgramOf("\"C:\\Program Files\\Adobe\\AfterFX.exe\" -re")==@"C:\Program Files\Adobe\AfterFX.exe" && AppLauncher.ProgramOf(@"C:\Program Files\Adobe\AfterFX.exe -re x.aep")==@"C:\Program Files\Adobe\AfterFX.exe"
+        && AppLauncher.ProgramOf("cmd.exe /c x")==null && AppLauncher.ProgramOf((string?)null)==null,"the program at the start of a command line");
+    Check(AppLauncher.InstallFolder(folder+@"\AfterFX.exe")==folder,"an application's own folder");
+    Check(AppLauncher.InstallFolder(Path.Combine(Environment.SystemDirectory,"notepad.exe"))==null && AppLauncher.InstallFolder(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"x.exe"))==null
+        && AppLauncher.InstallFolder(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Downloads","x.exe"))==null && AppLauncher.InstallFolder(@"D:\x.exe")==null
+        && AppLauncher.InstallFolder(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"Downloads","CrystalDiskMark","DiskMark64.exe"))!=null,"Windows, Program Files, Downloads and a drive are shared; a folder of its own is not");
+    var running=AppLauncher.Running();
+    Check(running.Count>0 && running.All(r=>File.Exists(r.App.Path) && r.Count>=1) && running.Select(r=>r.App.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count()==running.Count && running.All(r=>r.Pid!=Environment.ProcessId),"running programs, one entry each, without this one");
     return Task.CompletedTask;
 });
 

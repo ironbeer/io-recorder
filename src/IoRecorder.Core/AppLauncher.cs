@@ -21,6 +21,10 @@ public sealed class AppLaunch
     [JsonIgnore] public string ProcessName => System.IO.Path.GetFileNameWithoutExtension(Path);
 }
 
+// A program running now (AppLauncher.Running): the application it is, one of its processes (the one with a window, if any),
+// how many processes run it and whether one has a window.
+public sealed record RunningProgram(AppLaunch App,int Pid,int Count,bool Window,string? Title);
+
 public static class AppLauncher
 {
     // The applications of the Start menu (for all users and for this user): shortcuts to a program file that exists, by name.
@@ -68,6 +72,63 @@ public static class AppLauncher
         }
         catch(Exception ex) when(ex is COMException or UnauthorizedAccessException or FileNotFoundException or ArgumentException or InvalidCastException) { return null; }
         finally { if(instance is not null) Marshal.ReleaseComObject(instance); }
+    }
+
+    // The programs running now, one entry per program file: the ones with a window first. Programs whose file cannot be read
+    // (protected system processes) are left out; they cannot be chosen as an application.
+    public static List<RunningProgram> Running()
+    {
+        var found=new Dictionary<string,RunningProgram>(StringComparer.OrdinalIgnoreCase);
+        foreach(var p in Process.GetProcesses())
+            using(p)
+            {
+                if(p.Id is 0 or 4 || p.Id==Environment.ProcessId || ProgramOf(p.Id) is not { } path) continue;
+                bool window; string? title;
+                try { window=p.MainWindowHandle!=0; title=window && p.MainWindowTitle.Length>0?p.MainWindowTitle:null; }
+                catch(InvalidOperationException) { continue; }
+                if(found.TryGetValue(path,out var known)) { found[path]=known with { Count=known.Count+1,Pid=window && !known.Window?p.Id:known.Pid,Window=known.Window||window,Title=known.Title ?? title }; continue; }
+                found[path]=new(FromFile(path) ?? new() { Name=p.ProcessName,Path=path },p.Id,1,window,title);
+            }
+        return found.Values.OrderByDescending(r=>r.Window).ThenBy(r=>r.App.Name,StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    // The program file of a running process (null when it cannot be read).
+    public static string? ProgramOf(int pid)
+    {
+        nint process=OpenProcess(0x1000,false,(uint)pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if(process==0) return null;
+        try
+        {
+            var text=new StringBuilder(1024); int length=text.Capacity;
+            return QueryFullProcessImageNameW(process,0,text,ref length)?text.ToString():null;
+        }
+        finally { CloseHandle(process); }
+    }
+    // The program file at the start of a command line, when it is a full path ("C:\Program Files\x\x.exe" -arg, quoted or not).
+    public static string? ProgramOf(string? commandLine)
+    {
+        if(string.IsNullOrWhiteSpace(commandLine)) return null;
+        string line=commandLine.TrimStart(),first;
+        if(line.StartsWith('"')) { int close=line.IndexOf('"',1); first=close>0?line[1..close]:line[1..]; }
+        else { int exe=line.IndexOf(".exe",StringComparison.OrdinalIgnoreCase); first=exe>0?line[..(exe+4)]:line.Split(' ')[0]; }
+        return Path.IsPathFullyQualified(first)?first:null;
+    }
+
+    // The folder of an application's program, so that the other programs installed with it are followed too (a launcher's
+    // program, a helper started by another process). Null when that folder holds unrelated programs as well: Windows, the
+    // Program Files folders themselves, a drive, the user's own folders (Desktop, Downloads, Documents).
+    public static string? InstallFolder(string program)
+    {
+        string? folder=Path.GetDirectoryName(Path.GetFullPath(program));
+        if(string.IsNullOrEmpty(folder)) return null;
+        folder=Path.TrimEndingDirectorySeparator(folder);
+        if(Path.GetPathRoot(folder) is { } root && Path.TrimEndingDirectorySeparator(root).Equals(folder,StringComparison.OrdinalIgnoreCase)) return null;
+        string windows=Environment.GetFolderPath(Environment.SpecialFolder.Windows),profile=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if(windows.Length>0 && PathPolicy.IsUnder(folder,windows)) return null;
+        var shared=new[] { Environment.SpecialFolder.ProgramFiles,Environment.SpecialFolder.ProgramFilesX86,Environment.SpecialFolder.CommonProgramFiles,Environment.SpecialFolder.CommonProgramFilesX86,
+            Environment.SpecialFolder.UserProfile,Environment.SpecialFolder.DesktopDirectory,Environment.SpecialFolder.MyDocuments,Environment.SpecialFolder.LocalApplicationData,Environment.SpecialFolder.ApplicationData }
+            .Select(Environment.GetFolderPath).Append(profile.Length>0?Path.Combine(profile,"Downloads"):"").Where(f=>f.Length>0);
+        return shared.Any(f=>Path.TrimEndingDirectorySeparator(f).Equals(folder,StringComparison.OrdinalIgnoreCase))?null:folder;
     }
 
     // Most editing applications run once: starting another only hands over to the running one, whose start-up is past.
@@ -151,6 +212,7 @@ public static class AppLauncher
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window,out uint pid);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern nint OpenProcess(uint access,bool inherit,uint pid);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool QueryFullProcessImageNameW(nint process,uint flags,StringBuilder name,ref int length);
     [DllImport("advapi32.dll",SetLastError=true)] private static extern bool OpenProcessToken(nint process,uint access,out nint token);
     [DllImport("advapi32.dll",SetLastError=true)] private static extern bool DuplicateTokenEx(nint token,uint access,nint attributes,int level,int type,out nint duplicate);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]

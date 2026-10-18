@@ -335,8 +335,10 @@ public sealed class EtwRecorder
             if(e is not null) { e.EndUs=e.StartUs; e.Offset=d.ByteOffset; e.Size=unchecked((long)d.ViewSize); e.Note=note; Publish(e); }
         }
         var kernel=session.Source.Kernel;
-        kernel.ProcessStart+=d=> { tracker.Started(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
-        kernel.ProcessDCStart+=d=> { tracker.Running(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
+        // The program file decides a process only with program folders: from its command line, else from the process itself.
+        string? Program(ProcessTraceData d)=>tracker.FollowsFolders?AppLauncher.ProgramOf(d.CommandLine) ?? AppLauncher.ProgramOf(d.ProcessID):null;
+        kernel.ProcessStart+=d=> { tracker.Started(d.ProcessID,d.ImageFileName,d.ParentID,Program(d)); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
+        kernel.ProcessDCStart+=d=> { tracker.Running(d.ProcessID,d.ImageFileName,d.ParentID,Program(d)); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
         kernel.ProcessStop+=d=> { Proc(new() { TimeUs=Us(d),Kind="Stop",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,ExitStatus=d.ExitStatus }); tracker.Remove(d.ProcessID); };
         void Name(FileIONameTraceData d)
         {

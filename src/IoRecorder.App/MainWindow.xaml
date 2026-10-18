@@ -16,20 +16,15 @@
         <Grid.ColumnDefinitions><ColumnDefinition Width="295"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Border Style="{StaticResource Card}" Padding="18"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="CaptureSettings">
           <TextBlock Text="計測の設定" FontSize="17" FontWeight="SemiBold"/>
-          <StackPanel Orientation="Horizontal"><TextBlock Text="測るアプリ" Style="{StaticResource Caption}"/><local:HelpMark Margin="4,7,0,0" Text="スタートメニューのアプリから選びます。選んだアプリのプログラムと、そのアプリが起動するプロセス（子プロセス）のI/Oを記録します。&#10;「計測を始めたら、このアプリを起動する」がオンなら、記録を始めてからアプリを起動するので、起動したときの読み込み（前回のプロジェクトや素材の一覧など）も記録に入ります。アプリは管理者ではない、ふだんの権限で起動します。&#10;作業の途中でアプリが落ちて、いつもの方法で起動し直しても、記録は続きます。"/></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Text="計測対象のアプリケーション" Style="{StaticResource Caption}"/><local:HelpMark Margin="4,7,0,0" Text="インストール済みのアプリか、実行中のプロセスから選びます。選んだアプリのプログラムと、そのアプリが起動したプロセス（子・孫）、同じフォルダにあるプログラムのI/Oを記録します。&#10;「計測を始めたら、このアプリを起動する」がオンなら、記録を始めてからアプリを起動するので、起動したときの読み込み（前回のプロジェクトや素材の一覧など）も記録に入ります。アプリは管理者ではない、ふだんの権限で起動します。&#10;作業の途中でアプリが落ちて、いつもの方法で起動し直しても、記録は続きます。"/></StackPanel>
           <Border Background="{StaticResource Input}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Padding="10,8"><DockPanel><Image x:Name="AppIcon" Width="24" Height="24" Margin="0,0,10,0" DockPanel.Dock="Left" VerticalAlignment="Center" Visibility="Collapsed"/><TextBlock x:Name="AppText" Text="未選択" TextWrapping="Wrap" FontSize="12" VerticalAlignment="Center"/></DockPanel></Border>
           <Button x:Name="AppButton" Content="アプリを選ぶ…" Padding="10,7" Margin="0,6,0,0" HorizontalAlignment="Left" Click="AppButtonClick"/>
           <CheckBox x:Name="LaunchBox" IsChecked="True" IsEnabled="False" Content="計測を始めたら、このアプリを起動する" Margin="0,8,0,0" Checked="LaunchChanged" Unchecked="LaunchChanged"/>
           <TextBlock Text="アプリを閉じた状態で「計測を開始」を押してください。" TextWrapping="Wrap" FontSize="11" Foreground="#8498B8" Margin="0,6,0,0"/>
-          <TextBlock Text="計測範囲" Style="{StaticResource Caption}"/>
-          <ComboBox x:Name="ModeBox" SelectedIndex="2"><ComboBoxItem Content="プロセス指定"/><ComboBoxItem Content="フォルダ指定"/><ComboBoxItem Content="ハイブリッド（両方・OR）"/></ComboBox>
-          <TextBlock Text="プロセス名 / PID（; 区切り）" Style="{StaticResource Caption}"/>
-          <DockPanel><Button DockPanel.Dock="Right" Content="一覧" Padding="9,8" Margin="6,0,0,0" Click="ChooseProcess"/><TextBox x:Name="ProcessBox" Tag="例: AfterFX.exe; #1234" ToolTip="実行ファイル名の完全一致（大文字小文字・.exeの有無は問わない）。起動前でも名前で待機できます。PIDは #1234 の形式。"/></DockPanel>
-          <CheckBox x:Name="ChildrenBox" IsChecked="True" Content="子プロセスを含める"/>
-          <TextBlock Text="対象フォルダ / ドライブ（1行に1つ）" Style="{StaticResource Caption}"/>
+          <TextBlock Text="対象フォルダ / ドライブ（任意・1行に1つ）" Style="{StaticResource Caption}"/>
           <TextBox x:Name="RootsBox" Height="70" AcceptsReturn="True" TextWrapping="Wrap" Tag="例: L:\Production または \\server\share"/>
           <Button Content="対象フォルダを追加…" Margin="0,6,0,0" Click="BrowseRoot"/>
-          <TextBlock Text="ハイブリッドは、指定プロセスの全I/Oと、指定フォルダへの全プロセスのI/Oを記録します。" TextWrapping="Wrap" FontSize="11" Foreground="#8498B8" Margin="0,9,0,0"/>
+          <TextBlock Text="アプリとフォルダの両方を指定すると、アプリのI/O（どこへのものでも）と、フォルダへのI/O（どのプログラムのものでも）の両方を記録します。" TextWrapping="Wrap" FontSize="11" Foreground="#8498B8" Margin="0,9,0,0"/>
           <TextBlock Text="試験ラベル（任意・記録の見分け用メモ）" Style="{StaticResource Caption}"/><TextBox x:Name="LabelBox" ToolTip="HTMLレポートの見出しと「記録を開く」の概要に表示されます。計測の動作には影響しません。"/>
           <TextBlock Text="記録の保存先" Style="{StaticResource Caption}"/><TextBlock x:Name="RecordDestination" TextWrapping="Wrap" FontSize="12" Foreground="#B7C8E0"/>
           <TextBlock Text="LucidLinkの統計も同時に記録（任意）" Style="{StaticResource Caption}"/><TextBox x:Name="LucidBox" Tag="lucid.exe の場所（空欄なら記録しない）" ToolTip="記録中に lucid perf --all --seconds 1 を実行し、出力を lucidlink.jsonl に保存します。"/>
