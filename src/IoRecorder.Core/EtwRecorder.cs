@@ -243,7 +243,8 @@ public sealed class EtwRecorder
         long lastUs=0;
         // Every finished or abandoned request goes through here so that renames wait for their destination.
         void Emit(IoEvent e) { if(e.Operation==IoOperation.Rename) renames.Completed(e,lastUs); else Publish(e); }
-        IoEvent? Create(TraceEvent data,IoOperation op,ulong fileObject,string path,ulong fileKey=0)
+        var others=new OtherProcessCounter();
+        IoEvent? Create(TraceEvent data,IoOperation op,ulong fileObject,string path,ulong fileKey=0,long size=0)
         {
             lastUs=Us(data);
             if(data.ProcessID==Environment.ProcessId && !options.IncludeOwnProcess) return null;
@@ -270,7 +271,13 @@ public sealed class EtwRecorder
                 if(unresolvedSample.Count<UnresolvedSampleSize)
                     unresolvedSample.Add(new { timeUs=lastUs,operation=op,pid=data.ProcessID,process=name,fileObject=fileObject.ToString("X"),fileKey=fileKey!=0?fileKey.ToString("X"):null,matchesProcess=pm });
             }
-            if(!match) return null;
+            if(!match)
+            {
+                // Counted without its path, so a busy program that is not a target shows up afterwards (OtherProcessIo).
+                if(op is not (IoOperation.HardFault or IoOperation.DiskRead or IoOperation.DiskWrite or IoOperation.MapView or IoOperation.UnmapView))
+                    others.Add(tracker.Name(data.ProcessID),path,op,size);
+                return null;
+            }
             if(rm) Interlocked.Increment(ref _rootMatched);
             if(options.ProbeSizes && path.Length>0 && probed.Add(path))
                 if(!probes.Writer.TryWrite(path)) progress?.Report("サイズ照会の待ち行列が満杯です。一部のサイズは不明になります。");
@@ -312,7 +319,7 @@ public sealed class EtwRecorder
         }
         void ReadWrite(FileIOReadWriteTraceData d,IoOperation op)
         {
-            var e=Create(d,op,d.FileObject,d.FileName,d.FileKey);
+            var e=Create(d,op,d.FileObject,d.FileName,d.FileKey,(uint)d.IoSize);
             if(e is not null) { e.Offset=d.Offset; e.Size=(uint)d.IoSize; e.IoFlags=unchecked((uint)d.IoFlags); }
             Begin(d.IrpPtr,e);
         }
@@ -328,8 +335,8 @@ public sealed class EtwRecorder
             if(e is not null) { e.EndUs=e.StartUs; e.Offset=d.ByteOffset; e.Size=unchecked((long)d.ViewSize); e.Note=note; Publish(e); }
         }
         var kernel=session.Source.Kernel;
-        kernel.ProcessStart+=d=> { tracker.Set(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
-        kernel.ProcessDCStart+=d=> { tracker.Set(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
+        kernel.ProcessStart+=d=> { tracker.Started(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
+        kernel.ProcessDCStart+=d=> { tracker.Running(d.ProcessID,d.ImageFileName,d.ParentID); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
         kernel.ProcessStop+=d=> { Proc(new() { TimeUs=Us(d),Kind="Stop",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,ExitStatus=d.ExitStatus }); tracker.Remove(d.ProcessID); };
         void Name(FileIONameTraceData d)
         {
@@ -396,6 +403,11 @@ public sealed class EtwRecorder
         {
             using var cancelRegistration=token.Register(()=> { try { ReadLossCount();session.Stop(); } catch(ObjectDisposedException) { } });
             progress?.Report("ETW計測を開始しました。対象アプリで操作してください。"); ready?.Invoke();
+            // The application starts only now, so its start-up is recorded; its events wait in the session buffers meanwhile.
+            if(options.Launch is { } app)
+                try { Manifest.LaunchedProcessId=AppLauncher.Start(app); progress?.Report($"{app.Name} を起動しました（PID {Manifest.LaunchedProcessId}）。作業が終わったら「停止して保存」を押してください。"); }
+                catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or UnauthorizedAccessException)
+                { Warn($"{app.Name} を起動できませんでした（{ex.Message}）。記録は続いています。いつもの方法で {app.Name} を起動してください。"); }
             var processing=Task.Run(()=>session.Source.Process());
             var completed=await Task.WhenAny(processing,writer,probeTask,memoryTask);
             // The free-space guard ends the sampler and stops the session: the recording finishes normally.
@@ -426,6 +438,7 @@ public sealed class EtwRecorder
             Manifest.RootMatchedEvents=_rootMatched; Manifest.UnhandledFileIoOpcodes=unhandled; Manifest.CheckpointUtc=DateTimeOffset.UtcNow;
             Manifest.UnresolvedPathsByProcess=unresolvedBy.OrderByDescending(p=>p.Value).Take(50).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.OrdinalIgnoreCase);
             Manifest.UnresolvedDevicePrefixes=devicePrefixes.OrderByDescending(p=>p.Value).Take(20).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.OrdinalIgnoreCase);
+            Manifest.UnrecordedEvents=others.Events; Manifest.OtherProcessIo=others.Top();
             Manifest.State=failure is null?"Complete":"Failed";
             if(failure is not null) Manifest.Warnings.Add(failure.Message);
             if(_dropped>0 || Manifest.EtwEventsLost>0) Manifest.Warnings.Add("イベントが欠落しています。リプレイの完全性は保証されません。");

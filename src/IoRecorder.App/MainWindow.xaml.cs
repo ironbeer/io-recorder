@@ -34,7 +34,7 @@ public partial class MainWindow : Window
     {
         _args=args; InitializeComponent(); DarkTitleBar.Apply(this); _progress=new Progress<string>(s=>LogText.Text=s);
         StorageText.Text=AppPaths.Root; RecordDestination.Text=AppPaths.Recordings+@"\日時_内容"; BenchDestination.Text=AppPaths.Benchmarks+@"\日時_構成名_seed";
-        LoadSettings(); InitBench();
+        LoadSettings(); InitBench(); UpdateLaunchUi();
         AdminStatus.Text=EtwRecorder.IsAdministrator?"管理者で実行中":"通常権限（計測はできません）";
         VersionText.Text=$"v{ToolVersion.Text} · Windows x64";
         ProcessBox.TextChanged+=(s,e)=>UpdateLabelHint(); RootsBox.TextChanged+=(s,e)=>UpdateLabelHint(); UpdateLabelHint();
@@ -113,7 +113,19 @@ public partial class MainWindow : Window
         try
         {
             var options=ReadOptions();
-            string subject=Subject(options.ProcessNames,options.ProcessIds,options.Roots);
+            if(_launchApp is { } app && LaunchBox.IsChecked==true)
+            {
+                // A second start of most editing applications only hands over to the running one, whose start-up is past.
+                if(AppLauncher.IsRunning(app))
+                {
+                    var answer=MessageBox.Show(this,$"{app.Name} はもう起動しています。このまま記録すると、起動したときの読み込み（前回のプロジェクトや素材の一覧など）は記録に入りません。\n\nこのまま記録を始めますか？\n\n「いいえ」で中止します。{app.Name} を終了してから、もう一度「計測を開始」を押してください。",
+                        "IO Recorder",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No);
+                    if(answer!=MessageBoxResult.Yes) return;
+                    if(!options.ProcessNames.Contains(app.ProcessName,StringComparer.OrdinalIgnoreCase)) options.ProcessNames=[.. options.ProcessNames,app.ProcessName];
+                }
+                else options.Launch=app;
+            }
+            string subject=Subject(options.ProcessNames.Concat(options.Launch is { } started?new[] { started.ProcessName }:Array.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase),options.ProcessIds,options.Roots);
             string typed=LabelBox.Text.Trim(),label=typed.Length>0?typed:AutoLabel(subject);
             // Folder: Recordings\yyyyMMdd-HHmmss_<label or what is measured>.
             string output=AppPaths.NewFolder(AppPaths.Recordings,typed.Length>0?typed:subject);
@@ -122,9 +134,9 @@ public partial class MainWindow : Window
             _session=output; _recorder=new(); _stop=new(); _recording=true; _elapsed.Restart(); SetBusy(true);
             StatusBadge.Text="●  RECORDING"; QualityText.Text="ETWセッションを準備中…";
             var result=await _recorder.RecordAsync(output,options,label,_stop.Token,_progress);
-            _analysis=result; ApplyMetrics(result,false); await LoadSessionAsync(output);
+            _analysis=result; _lastRecording=output; ApplyMetrics(result,false); await LoadSessionAsync(output);
             StatusBadge.Text="●  SAVED";
-            LogText.Text="保存完了: "+output;
+            LogText.Text="保存完了: "+output+"（送るときは「記録をzipで書き出す…」）";
         }
         catch(Exception ex) { ReportError(ex); StatusBadge.Text="●  ERROR"; }
         finally { FinishWork(); }
@@ -201,7 +213,7 @@ public partial class MainWindow : Window
     {
         // Every long piece of work starts here, so the clock at the top right counts it (FinishWork stops it).
         if(busy) { _elapsed.Restart(); ElapsedText.Text="00:00:00"; }
-        StartButton.IsEnabled=!busy;StopButton.IsEnabled=busy&&_recording;
+        StartButton.IsEnabled=!busy;StopButton.IsEnabled=busy&&_recording;ExportRecordButton.IsEnabled=!busy&&_lastRecording is not null;
         GenerateButton.IsEnabled=!busy;ReplayButton.IsEnabled=!busy;CancelReplayButton.IsEnabled=busy&&!_recording;
         BenchGenerateButton.IsEnabled=BenchRunButton.IsEnabled=!busy;BenchCancelButton.IsEnabled=busy&&_benchRunning;
         BenchResetButton.IsEnabled=!busy&&_benchConsumed is not null;ReplayResetButton.IsEnabled=!busy&&_replayConsumed is not null;
@@ -238,14 +250,18 @@ public partial class MainWindow : Window
     private async Task LoadSessionAsync(string path)
     {
         var manifest=JsonStore.Read<SessionManifest>(Path.Combine(path,"session.json"));
-        // The summary saved when the record was finished is reused; only an old or missing one is recomputed.
-        var a=await Task.Run(()=>SessionAnalyzer.Load(path,_progress));
-        _session=Path.GetFullPath(path);_analysis=a;_replayDataset=_replayConsumed=null;SessionBox.Text=_session;ReplaySessionText.Text=_session;
+        // The summary saved when the record was finished is reused; only an old or missing one is recomputed. A record narrowed
+        // to some folders (02 「場所で絞り込む」) is summarized for them, apart from the whole record's summary.
+        var locations=LocationFilter.Load(path);
+        var a=await Task.Run(()=>SessionAnalyzer.Load(path,_progress,locations));
+        _session=Path.GetFullPath(path);_analysis=a;_locations=locations;_replayDataset=_replayConsumed=null;SessionBox.Text=_session;ReplaySessionText.Text=_session;
+        ShowLocations();
         // 02 has its own summary; 01 stays the page for recording and is not changed by opening a record.
         SummaryText.Text=$"{manifest.Label}  ／  {manifest.StartedUtc.ToLocalTime():yyyy/MM/dd HH:mm:ss}  ／  {a.DurationSeconds:N1} 秒";
         SummaryQuality.Text=$"{manifest.State} · ETW欠落 {(manifest.EtwLossCountAvailable?manifest.EtwEventsLost.ToString("N0"):"未取得")} · 保存欠落 {manifest.QueueEventsDropped:N0} · 完了未取得 {a.MissingCompletions:N0} · 失敗した操作 {a.FailedOperations:N0}{(a.FastIoRefusals>0?$"（高速I/Oの拒否 {a.FastIoRefusals:N0} 件は、すぐ出し直されたので数えていません）":"")}{(a.OtherProcessEvents>0?$" · 対象のファイルへの他のプロセスのI/O {a.OtherProcessEvents:N0} 件（ページングI/O以外は集計に含めない）":"")} · サイズは非同期観測値";
         if(manifest.State==RecordRecovery.Interrupted) SummaryQuality.Text="途中で終わった記録（ツールかPCが止まった）です。書き出されていた所までを表示しています。  ·  "+SummaryQuality.Text;
         if(manifest.State=="SyntheticDemo") SummaryQuality.Text="DEMO / 合成データです。実測値ではありません。  ·  "+SummaryQuality.Text;
+        if(OtherProcessIo.Summary(manifest,a) is { } others) SummaryQuality.Text+="\n記録しなかったプロセスで、同じドライブへのI/Oが多かったもの（次の記録で対象に足せます）: "+others;
         ResultCards.ShowRecord(a);ResultGraph.SetTimeline(a.Timeline);ResultFiles.ItemsSource=a.Files;ShowPatterns(a);ResultsScroll.ScrollToTop();
         await RefreshEvents();LogText.Text="記録を開きました: "+path;
     }
@@ -295,15 +311,16 @@ public partial class MainWindow : Window
     private async Task RefreshEvents()
     {
         if(_session is null) return;
-        string path=_session,query=EventFilter.Text.Trim();
+        string path=_session,query=EventFilter.Text.Trim(); var locations=_locations;
         var rows=await Task.Run(()=>
         {
             var queue=new Queue<EventRow>();
-            // Without a search only the last events are shown, so only the end of a large record is read.
-            var source=query.Length==0?RecordLog.Tail<IoEvent>(path,RecordLog.Events,2000):RecordLog.Read<IoEvent>(path,RecordLog.Events);
+            // Without a search (and without narrowing) only the last events are shown, so only the end of a large record is read.
+            var source=query.Length==0 && locations.IsEmpty?RecordLog.Tail<IoEvent>(path,RecordLog.Events,2000):RecordLog.Read<IoEvent>(path,RecordLog.Events);
             foreach(var e in source)
             {
-                if(query.Length>0 && !e.Path.Contains(query,StringComparison.OrdinalIgnoreCase) && !e.ProcessName.Contains(query,StringComparison.OrdinalIgnoreCase) && !e.Operation.ToString().Contains(query,StringComparison.OrdinalIgnoreCase)) continue;
+                if(!locations.Includes(e.Path)) continue;
+                if(query.Length>0 &&!e.Path.Contains(query,StringComparison.OrdinalIgnoreCase) && !e.ProcessName.Contains(query,StringComparison.OrdinalIgnoreCase) && !e.Operation.ToString().Contains(query,StringComparison.OrdinalIgnoreCase)) continue;
                 queue.Enqueue(new(e.StartUs/1_000_000.0,e.Operation.ToString(),e.Path,e.Size,e.ProcessName,e.ProcessId,e.Offset,e.NtStatus));
                 if(queue.Count>2000) queue.Dequeue();
             }
@@ -328,9 +345,15 @@ public partial class MainWindow : Window
         if(_session is null) return;
         try
         {
-            string session=_session;
-            if(!File.Exists(Path.Combine(session,"report.html"))) await Task.Run(()=>SessionAnalyzer.Export(session,_progress));
-            Process.Start(new ProcessStartInfo(Path.Combine(session,"report.html")) { UseShellExecute=true });
+            string session=_session; var locations=_locations;
+            // A record narrowed to some folders has its own report, written with its summary.
+            string report=Path.Combine(session,locations.IsEmpty?"report.html":NarrowedAnalysis.ReportName);
+            if(!File.Exists(report))
+            {
+                if(locations.IsEmpty) await Task.Run(()=>SessionAnalyzer.Export(session,_progress));
+                else await Task.Run(()=>{ File.Delete(Path.Combine(session,NarrowedAnalysis.FileName)); SessionAnalyzer.Load(session,_progress,locations); });
+            }
+            Process.Start(new ProcessStartInfo(report) { UseShellExecute=true });
         }
         catch(Exception ex) { ReportError(ex); }
     }
@@ -345,12 +368,13 @@ public partial class MainWindow : Window
             // Test target\yyyyMMdd-HHmmss_replay_<recording folder>, created fresh for every generation.
             string target=AppPaths.NewFolder(root,"replay_"+Path.GetFileName(_session)),session=_session;
             // Only the files the replay with this scope touches are generated; the replay must use the same scope.
-            int scope=ReplayScope.SelectedIndex;
+            int scope=ReplayScope.SelectedIndex; var locations=_locations;
             _replayDataset=null; _stop=new();SetBusy(true);StatusBadge.Text="●  GENERATING";
             var token=_stop.Token;
-            var m=await Task.Run(()=>DatasetBuilder.GenerateAsync(session,target,seed,_progress,token,processOnly:scope==1,rootOnly:scope==2));
-            _replayDataset=target; _replayScope=scope; SaveSettings();
+            var m=await Task.Run(()=>DatasetBuilder.GenerateAsync(session,target,seed,_progress,token,processOnly:scope==1,rootOnly:scope==2,locations:locations));
+            _replayDataset=target; _replayScope=scope; _replayLocations=locations.Key; SaveSettings();
             ReplayResultText.Text=$"生成完了\n{m.InitialSizes.Count:N0} ファイル / {m.InitialSizes.Values.Sum()/1048576.0:N1} MiB（{((ComboBoxItem)ReplayScope.SelectedItem).Content}）"
+                +(locations.IsEmpty?"":$"\n場所: {locations.Text}")
                 +(m.ExcludedPaths>0?$"\n対象外 {m.ExcludedPaths:N0} パス（変換・作成できない名前。再生ではスキップします）":"")
                 +$"\n{target}\n\nアップロード・キャッシュ条件を確認したら、リプレイを開始できます。"
                 +(TestLocation.IndexWarning(target) is { } indexed?"\n\n注意: "+indexed:"");
@@ -368,6 +392,7 @@ public partial class MainWindow : Window
             if(_session is null) throw new InvalidOperationException("先に記録を開いてください。");
             if(_replayDataset is null) throw new InvalidOperationException(_replayConsumed is not null?"このダミーは再生済みです。「ダミーを初期状態に戻す」を押すか、ダミーを生成し直してください。":"先に「1. ダミーファイルを生成」してください。");
             if(ReplayScope.SelectedIndex!=_replayScope) throw new InvalidOperationException("「再生する範囲」をダミー生成のときから変えています。ダミーはその範囲のファイルだけで作ってあるので、この範囲で再生するにはダミーを生成し直してください。");
+            if(_replayLocations is not null && _replayLocations!=_locations.Key) throw new InvalidOperationException("場所の絞り込みをダミー生成のときから変えています。ダミーはその場所のファイルだけで作ってあるので、いまの場所で再生するにはダミーを生成し直してください。");
             string target=_replayDataset;
             var options=new ReplayOptions { Mode=Enum.Parse<ReplayMode>((string)((ComboBoxItem)TimingBox.SelectedItem).Tag),Speed=Number(SpeedBox.Text,"速度倍率",0.001,1000),Workers=(int)Number(WorkersBox.Text,"最大並列数",1,256,true),ProcessOnly=ReplayScope.SelectedIndex==1,RootOnly=ReplayScope.SelectedIndex==2 };
             _stop=new();SetBusy(true);StatusBadge.Text="●  REPLAYING";
@@ -409,7 +434,7 @@ public partial class MainWindow : Window
         if(_args.Contains("--smoke-test")) return;
         Directory.CreateDirectory(AppPaths.Root);
         JsonStore.Write(AppPaths.SettingsFile,new Settings { Mode=ModeBox.SelectedIndex,Processes=ProcessBox.Text,Roots=RootsBox.Text,Label=LabelBox.Text,Children=ChildrenBox.IsChecked==true,Lucid=LucidBox.Text,LucidId=LucidIdBox.Text,
-            ReplayTarget=TargetBox.Text,BenchConfig=BenchConfigBox.Text,BenchTarget=BenchTargetBox.Text });
+            ReplayTarget=TargetBox.Text,BenchConfig=BenchConfigBox.Text,BenchTarget=BenchTargetBox.Text,LaunchApp=_launchApp,Launch=LaunchBox.IsChecked==true });
     }
     private void LoadSettings()
     {
@@ -419,6 +444,8 @@ public partial class MainWindow : Window
             var s=JsonStore.Read<Settings>(AppPaths.SettingsFile);ModeBox.SelectedIndex=Math.Clamp(s.Mode,0,2);ProcessBox.Text=s.Processes;RootsBox.Text=s.Roots;
             LabelBox.Text=s.Label;ChildrenBox.IsChecked=s.Children;LucidBox.Text=s.Lucid;LucidIdBox.Text=s.LucidId;
             TargetBox.Text=s.ReplayTarget;BenchConfigBox.Text=s.BenchConfig;BenchTargetBox.Text=s.BenchTarget;
+            // The chosen application is kept while its program is still installed; the process box keeps what was saved.
+            LaunchBox.IsChecked=s.Launch; _launchApp=s.LaunchApp is { } app && File.Exists(app.Path)?app:null;
         }
         catch(Exception ex) { LogText.Text="設定ファイルを読み込めませんでした: "+ex.Message; }
     }
@@ -478,6 +505,27 @@ public partial class MainWindow : Window
         CompareScopeBox.SelectedIndex=1; await _compareLoad; await Capture("compare-replayed");
         if(CompareValuesGrid.Items.Count==0 || !CompareNote.Text.Contains("再生した要求だけ")) throw new InvalidDataException("UI実行時の「再生した要求だけ」の比較に失敗しました。");
         CompareScopeBox.SelectedIndex=0; await _compareLoad;
+        // 02 narrowed to one folder (「場所で絞り込む」 keeps it in the record): the tree of folders, then a page of that folder only.
+        var tree=LocationTree(SessionAnalyzer.Load(demo).Files);
+        if(tree.Count!=1 || tree[0].Path!="D:" || tree[0].Children.Single().Name!="Production") throw new InvalidDataException("UI実行時の場所の一覧が不正です。");
+        LocationFilter.Save(demo,LocationFilter.Of([@"D:\Production\scene_001\frames"])); await LoadSessionAsync(demo); ShowPage(1); await Capture("results-locations");
+        if(ResultFiles.Items.Count!=16 || !LocationText.Text.Contains(@"scene_001\frames") || !ReplayLocationText.Text.Contains("frames")) throw new InvalidDataException("UI実行時の場所の絞り込みに失敗しました。");
+        LocationFilter.Save(demo,new()); await LoadSessionAsync(demo);
+        // The two dialogs, shown without waiting for them and rendered on their own.
+        async Task CaptureDialog(Window dialog,string name)
+        {
+            dialog.Show(); await Task.Delay(1500); dialog.UpdateLayout();
+            var root=(FrameworkElement)dialog.Content;
+            var image=new RenderTargetBitmap(Math.Max(1,(int)root.ActualWidth),Math.Max(1,(int)root.ActualHeight),96,96,PixelFormats.Pbgra32);
+            var drawing=new DrawingVisual();
+            using(var context=drawing.RenderOpen()) { context.DrawRectangle(dialog.Background,null,new Rect(0,0,root.ActualWidth,root.ActualHeight)); context.DrawRectangle(new VisualBrush(root),null,new Rect(0,0,root.ActualWidth,root.ActualHeight)); }
+            image.Render(drawing);
+            var png=new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(image)); using(var file=File.Create(Path.Combine(output,name+".png"))) png.Save(file);
+            dialog.Close();
+        }
+        if(LocationDialog(SessionAnalyzer.Load(demo),LocationFilter.Of([@"D:\Production\scene_001\frames"])).Dialog is not { } places) throw new InvalidDataException("UI実行時の場所の画面を作れませんでした。");
+        await CaptureDialog(places,"locations-dialog");
+        await CaptureDialog(AppDialog(),"app-dialog");
         EventFilter.Text="SetEndOfFile";await RefreshEvents();
         if(EventGrid.Items.Count!=1) throw new InvalidDataException("イベント検索の結果が不正です。");
         string dataset=Path.Combine(output,"ui-dataset-"+Guid.NewGuid().ToString("N")[..6]);TargetBox.Text=dataset;
@@ -508,5 +556,6 @@ public partial class MainWindow : Window
         public int Mode {get;set;}=2;public string Processes {get;set;}="";public string Roots {get;set;}="";public string Label {get;set;}="";
         public bool Children {get;set;}=true;public string Lucid {get;set;}="";public string LucidId {get;set;}="";
         public string ReplayTarget {get;set;}="";public string BenchConfig {get;set;}="";public string BenchTarget {get;set;}="";
+        public AppLaunch? LaunchApp {get;set;} public bool Launch {get;set;}=true;
     }
 }

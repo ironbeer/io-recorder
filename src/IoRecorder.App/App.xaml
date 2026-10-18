@@ -61,14 +61,17 @@
       <Setter Property="Foreground" Value="#DCE7F6"/><Setter Property="Margin" Value="0,8"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
         <StackPanel Orientation="Horizontal" Background="Transparent">
-          <Border x:Name="box" Width="18" Height="18" CornerRadius="5" Background="{StaticResource Input}" BorderBrush="#3A4C66" BorderThickness="1.5" VerticalAlignment="Center">
+          <Border x:Name="box" Width="18" Height="18" CornerRadius="5" Background="{StaticResource Input}" BorderBrush="#3A4C66" BorderThickness="1.5" VerticalAlignment="Center"><Grid>
             <Path x:Name="mark" Data="M 3 7.5 L 6.3 10.8 L 12 4.2" Stroke="#09251F" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-          </Border>
+            <!-- Some of the items below are chosen (a folder tree). -->
+            <Path x:Name="part" Data="M 4 7.5 L 11 7.5" Stroke="#65DDC8" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/>
+          </Grid></Border>
           <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
         </StackPanel>
         <ControlTemplate.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="box" Property="BorderBrush" Value="#65DDC8"/></Trigger>
           <Trigger Property="IsChecked" Value="True"><Setter TargetName="box" Property="Background" Value="#65DDC8"/><Setter TargetName="box" Property="BorderBrush" Value="#65DDC8"/><Setter TargetName="mark" Property="Visibility" Value="Visible"/></Trigger>
+          <Trigger Property="IsChecked" Value="{x:Null}"><Setter TargetName="box" Property="BorderBrush" Value="#65DDC8"/><Setter TargetName="part" Property="Visibility" Value="Visible"/></Trigger>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
@@ -151,6 +154,13 @@
     <Style TargetType="DataGridColumnHeader"><Setter Property="Background" Value="{StaticResource Raised}"/><Setter Property="Foreground" Value="#9EAFCA"/><Setter Property="Padding" Value="8,10"/><Setter Property="BorderThickness" Value="0"/></Style>
     <Style TargetType="DataGridCell"><Setter Property="Padding" Value="7,4"/><Setter Property="BorderThickness" Value="0"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#2D4262"/><Setter Property="Foreground" Value="White"/></Trigger></Style.Triggers></Style>
 
+    <!-- Folder tree with check boxes (02: narrowing a record to some locations). -->
+    <Style TargetType="TreeView"><Setter Property="Background" Value="#111B2A"/><Setter Property="Foreground" Value="#DCE7F6"/><Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+      <Style.Resources><SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2D4262"/><SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#22324A"/><SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White"/><SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="White"/></Style.Resources>
+    </Style>
+    <Style x:Key="LocationItem" TargetType="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/><Setter Property="Foreground" Value="#DCE7F6"/><Setter Property="Padding" Value="2,1"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/></Style>
+    <!-- The label is a TextBlock, so an underscore in a folder name is shown as it is (not taken as an access key). -->
+    <HierarchicalDataTemplate x:Key="LocationTemplate" ItemsSource="{Binding Children}"><CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}" Margin="0,2"><TextBlock Text="{Binding Label}"/></CheckBox></HierarchicalDataTemplate>
     <Style TargetType="ListBox"><Setter Property="Background" Value="#111B2A"/><Setter Property="Foreground" Value="#DCE7F6"/><Setter Property="BorderBrush" Value="{StaticResource Border}"/></Style>
     <Style TargetType="ListBoxItem">
       <Setter Property="Padding" Value="12,10"/><Setter Property="Foreground" Value="#DCE7F6"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>

@@ -54,8 +54,9 @@ public sealed class ResetSummary
 public static class DatasetBuilder
 {
     public const string Marker=".iorecorder-dataset.json";
-    // processOnly / rootOnly: only the files the replay with the same scope will touch are generated.
-    public static async Task<DatasetManifest> GenerateAsync(string session,string destination,int seed=42,IProgress<string>? progress=null,CancellationToken token=default,IProgress<WorkProgress>? work=null,bool processOnly=false,bool rootOnly=false)
+    // processOnly / rootOnly: only the files the replay with the same scope will touch are generated. locations: only the I/O
+    // inside these folders (LocationFilter); the dummy keeps them and its replay replays only that I/O.
+    public static async Task<DatasetManifest> GenerateAsync(string session,string destination,int seed=42,IProgress<string>? progress=null,CancellationToken token=default,IProgress<WorkProgress>? work=null,bool processOnly=false,bool rootOnly=false,LocationFilter? locations=null)
     {
         work?.Report(new("生成するファイルを集計中",0,0,"記録を読み込んでいます"));
         session=Path.GetFullPath(session); destination=Path.GetFullPath(destination);
@@ -64,7 +65,8 @@ public static class DatasetBuilder
             throw new IOException("ダミー生成先は空のフォルダにしてください。再試験には新しいフォルダを使います。");
         var source=JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json"));
         var analysis=SessionAnalyzer.Load(session);
-        var m=new DatasetManifest { SessionId=source.Id,Seed=seed,Session=session,Scope=processOnly?"ProcessOnly":rootOnly?"RootOnly":"All" };
+        locations??=new();
+        var m=new DatasetManifest { SessionId=source.Id,Seed=seed,Session=session,Scope=processOnly?"ProcessOnly":rootOnly?"RootOnly":"All",Locations=[.. locations.Folders] };
         // Paths of the successful operations the replay with this scope will run, and names the record looked up without finding
         // them: the replay looks them up again, so they get a dummy path, but nothing is created there.
         var wanted=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -72,7 +74,7 @@ public static class DatasetBuilder
         var lookups=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var e in RecordLog.Read<IoEvent>(session, RecordLog.Events))
         {
-            if(!e.IsFileIo || e.ByOtherProcess || processOnly&&!e.MatchesProcess || rootOnly&&!e.MatchesRoot) continue;
+            if(!e.IsFileIo || e.ByOtherProcess || processOnly&&!e.MatchesProcess || rootOnly&&!e.MatchesRoot || !locations.Includes(e.Path)) continue;
             if(e.Failed)
             {
                 if(e.Operation==IoOperation.Open && e.NtStatus is 0xC0000034 or 0xC000003A && ReplayExecutor.ReplaysFailure(e) && !string.IsNullOrEmpty(e.Path)) lookups.Add(e.Path);
@@ -175,6 +177,7 @@ public static class DatasetBuilder
                 m.Notes.AddRange(excluded.Take(20));
             }
             if(m.Scope!="All") m.Notes.Add(m.Scope=="ProcessOnly"?"指定プロセスに一致したI/Oが使うファイルだけを作りました。":"指定フォルダに一致したI/Oが使うファイルだけを作りました。");
+            if(m.Locations.Count>0) m.Notes.Add("場所を絞り込んで作りました（この中のI/Oだけを再生します）: "+LocationFilter.TextOf(m.Locations));
             m.State="Ready";
             m.Notes.Add("疑似乱数の非スパースファイル。圧縮されにくいデータ条件です。");
             m.Notes.Add("初期サイズは非同期照会値またはRead範囲からの推定です。LucidLinkへの初期アップロードとキャッシュ調整は再生前に行ってください。");

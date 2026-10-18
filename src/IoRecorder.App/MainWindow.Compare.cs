@@ -55,13 +55,17 @@ public partial class MainWindow
         try
         {
             var scope=CompareScope;
+            // The original record's narrowing (02 「場所で絞り込む」) applies to both sides.
+            var locations=LocationFilter.Load(original);
             CompareSummary.Text="比較しています…（古い形式の記録は、集計し直すため時間がかかります）";
-            var c=await Task.Run(()=>ReplayComparison.Build(original,trace,scope));
+            var c=await Task.Run(()=>ReplayComparison.Build(original,trace,scope,locations));
             var manifest=JsonStore.Read<SessionManifest>(Path.Combine(original,"session.json"));
             CompareSummary.Text=$"元: {manifest.Label}  ／  再生: {c.Link.Options.Mode}・速度 {c.Link.Options.Speed:0.###}倍・最大並列 {c.Link.Options.Workers}・再生 {c.Link.ElapsedSeconds:N1} 秒";
             CompareNote.Text=(c.Scope==ComparisonScope.Replayed
                 ?$"比べる範囲: 再生した要求だけ（再生したプロセス PID {c.ReplayProcessId} のI/Oと、元の記録のうち再生の対象にしたI/O）。試験先のOSやほかのプログラムのI/Oは含みません。"
                 :"比べる範囲: 全体（両方の記録のすべてのプロセス）。再生側には、再生中に試験先のOSやほかのプログラムが出したI/Oも入ります。")
+                +(c.Locations.Count>0?$"\n場所を絞り込んでいます（両方とも、この中のI/Oだけ）: {LocationFilter.TextOf(c.Locations)}":"")
+                +(c.Link.Options.Locations.Count>0?$"\nこの再生のダミーは、場所を絞り込んで作ったものです: {LocationFilter.TextOf(c.Link.Options.Locations)}":"")
                 +$"\n試験先のダミー: {c.Link.Dataset}　·　再生の記録: {trace}"
                 +(c.IndexerNote is { } indexer?"\n注意: "+indexer:"");
             CompareValuesGrid.ItemsSource=c.Values.Select(v=>new ValueRow(v.Item,Value(v.Unit,v.Original),Value(v.Unit,v.Replay),Difference(v.Unit,v.Original,v.Replay))).ToArray();

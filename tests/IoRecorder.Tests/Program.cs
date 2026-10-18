@@ -804,6 +804,104 @@ await Test("bench: a duration with a rate sets the amount; full speed cannot tak
     await Throws<InvalidDataException>(()=>Task.Run(()=>BenchmarkPlanner.ParseDuration("30")));
 });
 
+await Test("process tracking: children stay recorded after their parent ends; a reused parent PID makes nothing a target",()=>
+{
+    // Running at the start: the application (10), its helper (11) and the helper's child (12). 30 names 10 as its parent but
+    // started before it, so that PID belonged to another process then.
+    var running=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"] },[(10,"AfterFX.exe",1,100),(11,"helper.exe",10,200),(12,"render.exe",11,250),(30,"old.exe",10,50)]);
+    Check(running.Matches(10)&&running.Matches(11)&&running.Matches(12),"the application, its child and grandchild");
+    Check(!running.Matches(30),"a process whose parent PID was reused");
+    // A launcher (a target by name) starts the main program and ends; the program then starts a renderer.
+    var started=new ProcessTracker(new RecordingOptions { ProcessNames=["Launcher"] },[]);
+    started.Started(40,"Launcher.exe",1); started.Started(41,"Main.exe",40); started.Remove(40); started.Started(42,"Render.exe",41);
+    Check(started.Matches(41)&&started.Matches(42),"the program and its renderer after the launcher ended");
+    // The ended launcher's PID is reused by an unrelated program: neither it nor its child is a target.
+    started.Started(40,"Unrelated.exe",1); started.Started(43,"Child.exe",40);
+    Check(!started.Matches(40)&&!started.Matches(43),"a reused PID");
+    Check(started.TargetPids().Order().SequenceEqual(new[] { 41,42 }),"targets: "+string.Join(",",started.TargetPids()));
+    var alone=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"],IncludeChildren=false },[(10,"AfterFX.exe",1,100),(11,"helper.exe",10,200)]);
+    Check(alone.Matches(10)&&!alone.Matches(11),"without children");
+    return Task.CompletedTask;
+});
+
+await Test("left-out processes: counted per process and drive without names; the summary names those on the record's drives",()=>
+{
+    var counter=new OtherProcessCounter();
+    counter.Add("SearchIndexer",@"Z:\project\a.exr",IoOperation.Read,8L<<20);
+    counter.Add("SearchIndexer",@"z:\project\b.exr",IoOperation.Read,8L<<20);
+    counter.Add("chrome",@"C:\Users\x\cache\data",IoOperation.Write,4L<<20);
+    counter.Add("lucid",@"\\nas\share\x",IoOperation.Write,1);
+    counter.Add("System","",IoOperation.Open,0);
+    var top=counter.Top();
+    Check(counter.Events==5 && top[0].Process=="SearchIndexer" && top[0].Volume=="Z:" && top[0].ReadBytes==16L<<20 && top[0].Operations==2,"per process and drive");
+    Check(top.Any(r=>r.Volume==@"\\nas\share") && top.Any(r=>r.Volume==""),"shares and unknown paths");
+    var summary=OtherProcessIo.Summary(new SessionManifest { OtherProcessIo=top },new AnalysisResult { Files=[new() { Path=@"Z:\project\shot.aep" }] });
+    Check(summary is not null && summary.Contains("SearchIndexer（Z:）") && !summary.Contains("chrome"),"only the record's drives: "+summary);
+    Check(PathPolicy.VolumeOf(@"\\?\UNC\nas\share\x")==@"\\nas\share" && PathPolicy.VolumeOf(@"\\?\c:\x")=="C:" && PathPolicy.VolumeOf(@"\Device\HarddiskVolume3\x")==@"\Device\HarddiskVolume3","volume forms");
+    return Task.CompletedTask;
+});
+
+await Test("locations: a record narrowed to a folder is summarized, generated, replayed and compared for it only",async()=>
+{
+    var frames=LocationFilter.Of([@"D:\Production\scene_001\frames\"]);
+    Check(frames.Folders.Single()==@"D:\Production\scene_001\frames" && frames.Includes(@"D:\Production\scene_001\frames\frame_0001.exr") && frames.Includes(@"d:\production\scene_001\frames")
+        && !frames.Includes(@"D:\Production\scene_001\frames2\x") && !frames.Includes(""),"folder matching");
+    Check(LocationFilter.Of([@"D:\a",@"D:\a\b",@"d:\A\"]).Folders.Count==1 && new LocationFilter().Includes(""),"nested and repeated folders are one; no folders is everything");
+    var own=LocationFilter.Of([@"D:\Production\scene_001\*"]);
+    Check(own.Includes(@"D:\Production\scene_001\background.psd") && !own.Includes(@"D:\Production\scene_001\frames\frame_0001.exr") && !own.Includes(@"D:\Production\scene_001")
+        && own.Text.Contains("直下のファイルだけ") && LocationFilter.Of([@"D:\a\*",@"D:\a"]).Folders.Single()==@"D:\a","a folder's own files without its folders");
+    string session=DemoSession.Create(Sub("locations-demo"));
+    LocationFilter.Save(session,frames); Check(LocationFilter.Load(session).Key==frames.Key,"kept in the record");
+    var part=SessionAnalyzer.Load(session,null,frames);
+    Check(part.Reads==128 && part.ReadBytes==128*32768L && part.Writes==0 && part.Files.All(f=>f.Path.Contains(@"\frames\")) && part.Locations.Count==1,"the folder's summary");
+    Check(File.Exists(Path.Combine(session,NarrowedAnalysis.ReportName)) && SessionAnalyzer.Load(session).Reads==200,"its own report; the whole record's summary unchanged");
+    string data=Sub("locations-data"); var m=await DatasetBuilder.GenerateAsync(session,data,locations:frames);
+    Check(m.InitialSizes.Count==16 && m.Locations.SequenceEqual(frames.Folders),"only the folder's files in the dummy");
+    var r=await new ReplayEngine().RunAsync(session,data,new() { Speed=1000 });
+    Check(r.Failed==0 && r.ReadBytes==128*32768L && r.WriteBytes==0 && r.Options.Locations.Count==1,"only the folder's I/O replayed");
+    DemoSession.CreateReplayTrace(session,Sub("locations-compare"));
+    var c=ReplayComparison.Build(session,ReplayCapture.List(session).First().Folder,ComparisonScope.All,frames);
+    Check(c.Original.ReadBytes==128*32768L && c.Replay.ReadBytes==128*32768L && c.Files.All(f=>f.Path.Contains(@"\frames\")) && c.Locations.Count==1,"both sides narrowed");
+    LocationFilter.Save(session,new()); Check(!File.Exists(Path.Combine(session,LocationFilter.FileName)),"no narrowing leaves no file");
+});
+
+await Test("archive: a record goes into one zip without its summaries and comes back; a zip pointing outside is refused",async()=>
+{
+    string record=DemoSession.Create(Sub("archive-demo"));
+    File.WriteAllText(Path.Combine(record,"events.csv"),"made on request");
+    var zip=await RecordArchive.ExportAsync(record,Sub("archive-out"));
+    Check(Path.GetFileName(zip)=="archive-demo.zip" && !File.Exists(zip+".part"),"named after the record");
+    using(var z=System.IO.Compression.ZipFile.OpenRead(zip))
+    {
+        var names=z.Entries.Select(e=>e.FullName).ToList();
+        Check(names.Contains("archive-demo/session.json") && names.Contains("archive-demo/events.jsonl") && names.Contains("archive-demo/sizes.jsonl")
+            && !names.Any(n=>n.EndsWith("/analysis.json") || n.EndsWith("/report.html") || n.EndsWith("/events.csv") || n.EndsWith("/timeline.csv")),"what was measured only: "+string.Join(", ",names));
+    }
+    Check(Path.GetFileName(await RecordArchive.ExportAsync(record,Sub("archive-out")))=="archive-demo (2).zip","a second export does not overwrite");
+    var back=RecordArchive.Import(zip,Sub("archive-in"));
+    Check(Path.GetFileName(back)=="archive-demo" && SessionAnalyzer.Load(back).Reads==200 && !Directory.Exists(back+".importing"),"opens again with the same numbers");
+    Check(Path.GetFileName(RecordArchive.Import(zip,Sub("archive-in")))=="archive-demo (2)","a second import gets its own folder");
+    string evil=Path.Combine(Sub("archive-out"),"evil.zip");
+    using(var z=System.IO.Compression.ZipFile.Open(evil,System.IO.Compression.ZipArchiveMode.Create)) { z.CreateEntry("rec/session.json"); z.CreateEntry("rec/../../escape.txt"); }
+    await Throws<InvalidDataException>(()=>Task.Run(()=>RecordArchive.Import(evil,Sub("archive-evil"))));
+    Check(!File.Exists(Path.Combine(testRoot,"escape.txt")) && !Directory.EnumerateFileSystemEntries(Sub("archive-evil")).Any(),"refused without leftovers");
+});
+
+await Test("launch: a shortcut gives its program, and the application started for a recording is one of its targets",async()=>
+{
+    string folder=Sub("launch"); Directory.CreateDirectory(folder);
+    string exe=Path.Combine(Environment.SystemDirectory,"cmd.exe"),link=Path.Combine(folder,"コマンド.lnk");
+    dynamic shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!;
+    var shortcut=shell.CreateShortcut(link); shortcut.TargetPath=exe; shortcut.Arguments="/c exit 0"; shortcut.WorkingDirectory=folder; shortcut.Save();
+    var app=AppLauncher.FromFile(link)!;
+    Check(app.Name=="コマンド" && app.Path.Equals(exe,StringComparison.OrdinalIgnoreCase) && app.Arguments=="/c exit 0" && app.ProcessName=="cmd","the shortcut's program, arguments and name");
+    var options=new RecordingOptions { Mode=CaptureMode.Folder,Roots=[@"C:\Production"],Launch=app }; options.Validate(Sub("launch-record"));
+    Check(options.Mode==CaptureMode.Hybrid && options.ProcessNames.Contains("cmd"),"the application is a target (its folder mode becomes hybrid)");
+    await Throws<ArgumentException>(()=>Task.Run(()=>new RecordingOptions { Launch=new() { Name="x",Path=Path.Combine(folder,"missing.exe") } }.Validate(Sub("launch-record"))));
+    Check(AppLauncher.Start(app)>0,"started");
+    Check(AppLauncher.StartMenu().All(a=>File.Exists(a.Path) && a.Path.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)),"the Start menu lists programs that exist");
+});
+
 int failures=results.Count(r=>!r.Passed);
 Console.WriteLine($"\n{results.Count-failures}/{results.Count} passed. Artifacts: {testRoot}");
 JsonStore.Write(Path.Combine(testRoot,"verification.json"),results.Select(r=>new { r.Name,r.Passed,r.Error }).ToArray());

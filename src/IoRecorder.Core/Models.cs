@@ -32,9 +32,18 @@ public sealed class RecordingOptions
     public int QueueCapacity { get; set; } = 65_536;
     public string? LucidExecutable { get; set; }
     public string? LucidInstance { get; set; }
+    // Started by the recorder once the recording runs (without administrator rights); its program name becomes a target.
+    public AppLaunch? Launch { get; set; }
 
     public void Validate(string output)
     {
+        if (Launch is { } app)
+        {
+            if (!File.Exists(app.Path)) throw new ArgumentException("起動するアプリが見つかりません: " + app.Path);
+            if (!ProcessNames.Contains(app.ProcessName, StringComparer.OrdinalIgnoreCase)) ProcessNames = [.. ProcessNames, app.ProcessName];
+            // The application started for the recording is always recorded, also with folders given.
+            if (Mode == CaptureMode.Folder) Mode = CaptureMode.Hybrid;
+        }
         ProcessNames = ProcessNames.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
         bool processes = ProcessNames.Length > 0 || ProcessIds.Length > 0, roots = Roots.Any(r => !string.IsNullOrWhiteSpace(r));
         if (Mode == CaptureMode.Process && !processes)
@@ -102,6 +111,11 @@ public sealed class SessionManifest
     public int? RecorderProcessId { get; set; }
     public DateTimeOffset? RecorderStartedUtc { get; set; }
     public DateTimeOffset? CheckpointUtc { get; set; }
+    // The I/O this recording left out (processes that are not targets), counted per process and drive without file names.
+    public long UnrecordedEvents { get; set; }
+    public List<OtherProcessIo> OtherProcessIo { get; set; } = [];
+    // The application the recorder started once the recording ran (RecordingOptions.Launch), or why it could not.
+    public int? LaunchedProcessId { get; set; }
     public List<string> Warnings { get; set; } = [];
 }
 
@@ -287,6 +301,8 @@ public sealed class AnalysisResult
     public List<FileAccessPattern> AccessPatterns { get; set; } = [];
     public List<ChunkEstimate> ChunkEstimates { get; set; } = [];
     public bool AccessRangesCapped { get; set; }
+    // The folders this summary is narrowed to (LocationFilter); empty for the whole record.
+    public List<string> Locations { get; set; } = [];
     // Read heat map of the most-read files for the HTML report; built during analysis, not stored in analysis.json.
     [JsonIgnore] public List<HeatMap>? HeatMaps { get; set; }
 }
@@ -310,6 +326,8 @@ public sealed class DatasetManifest
     public List<string> Runs { get; set; } = [];
     // Which operations the dummy was made for (All / ProcessOnly / RootOnly), and how many recorded paths were left out.
     public string Scope { get; set; } = "All";
+    // The folders the record was narrowed to when the dummy was made (LocationFilter); its replay replays only that I/O.
+    public List<string> Locations { get; set; } = [];
     public int ExcludedPaths { get; set; }
     public Dictionary<string,string> Paths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string,long> InitialSizes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -326,6 +344,8 @@ public sealed class ReplayOptions
     public int Workers { get; set; } = 8;
     public bool ProcessOnly { get; set; }
     public bool RootOnly { get; set; }
+    // The folders the dummy was made for (taken from the dummy by the replay): only the I/O inside them is replayed.
+    public List<string> Locations { get; set; } = [];
     public PagingReplay Paging { get; set; } = PagingReplay.UnmatchedReads;
     public bool TrimLeadingIdle { get; set; }
     // Wait before the first request until the OS has written recent writes out of its cache (WriteBack.SettleAsync).

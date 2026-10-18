@@ -140,7 +140,8 @@ public static class SessionAnalyzer
 
     // Reads events.jsonl twice: totals and file states first, then ranges (which need the first mutation of each file)
     // and, when asked, the read heat map of the most-read files.
-    public static AnalysisResult Analyze(string session, bool heat = false)
+    // locations: only the I/O inside these folders (LocationFilter); null or empty for the whole record.
+    public static AnalysisResult Analyze(string session, bool heat = false, LocationFilter? locations = null)
     {
         var manifest = JsonStore.Read<SessionManifest>(Path.Combine(session, "session.json"));
         if (manifest.SchemaVersion is < 1 or > SessionManifest.CurrentSchema) throw new InvalidDataException("未対応の記録形式です。");
@@ -157,8 +158,10 @@ public static class SessionAnalyzer
         var operations = new Dictionary<string,long>();
         var sizes = new Dictionary<string,long>();
         var extensions = new Dictionary<string,long>();
+        bool narrowed = locations is { IsEmpty: false };
         foreach (var e in RecordLog.Read<IoEvent>(session, RecordLog.Events))
         {
+            if (narrowed && !locations!.Includes(e.Path)) continue;
             metrics.Add(e);
             if (!e.IsFileIo || e.IsFastIoRefusal || e.ByOtherProcess) continue;
             if (!e.Failed && e.Operation==IoOperation.Rename && !string.IsNullOrWhiteSpace(e.DestinationPath))
@@ -216,6 +219,7 @@ public static class SessionAnalyzer
                 if (files.TryGetValue(parent, out var p)) { if (p.IsDirectory) break; p.IsDirectory = true; }
         var result = metrics.Snapshot(int.MaxValue);
         result.DurationSeconds = Math.Max(result.DurationSeconds, ((manifest.EndedUtc ?? manifest.StartedUtc) - manifest.StartedUtc).TotalSeconds);
+        result.Locations = narrowed ? [.. locations!.Folders] : [];
         Dictionary<string,HeatMap>? heats = null;
         if (heat)
         {
@@ -307,13 +311,35 @@ public static class SessionAnalyzer
 
     // The summary saved by Export when it is newer than the record and of the current version. Otherwise the record is
     // analyzed again and the summary files are rewritten, so the next open is quick and the report has the current charts.
-    public static AnalysisResult Load(string session, IProgress<string>? progress = null)
+    // locations: the record narrowed to these folders; its summary is kept apart (NarrowedAnalysis) and the whole record's
+    // summary files stay as they are.
+    public static AnalysisResult Load(string session, IProgress<string>? progress = null, LocationFilter? locations = null)
     {
         // A record cut off by a crash is finished first (RecordRecovery), which also makes it newer than its summary.
         if (RecordRecovery.Prepare(session)) progress?.Report("途中で終わっていた記録を、書き出されていた所までで確定しました。");
         string analysis = Path.Combine(session, "analysis.json"), sizes = Path.Combine(session, "sizes.jsonl");
         DateTime newest = new[] { sizes, Path.Combine(session, "session.json") }.Where(File.Exists).Select(File.GetLastWriteTimeUtc)
             .Append(RecordLog.LastWriteUtc(session, RecordLog.Events)).Max();
+        if (locations is { IsEmpty: false })
+        {
+            string narrowed = Path.Combine(session, NarrowedAnalysis.FileName);
+            if (File.Exists(narrowed) && File.GetLastWriteTimeUtc(narrowed) >= newest)
+                try
+                {
+                    var saved = JsonStore.Read<NarrowedAnalysis>(narrowed);
+                    if (saved.Key == locations.Key && saved.Result.Version >= AnalysisResult.CurrentVersion) return saved.Result;
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidDataException) { }
+            progress?.Report($"場所を絞り込んで集計しています（{locations.Describe()}）…");
+            var part = Analyze(session, heat: true, locations);
+            try
+            {
+                JsonStore.Write(narrowed, new NarrowedAnalysis { Key = locations.Key, Result = part });
+                HtmlReport.Write(session, part, NarrowedAnalysis.ReportName);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            return part;
+        }
         if (File.Exists(analysis) && File.GetLastWriteTimeUtc(analysis) >= newest)
             try
             {
@@ -351,7 +377,7 @@ public static class SessionAnalyzer
 
 public static class HtmlReport
 {
-    public static void Write(string session, AnalysisResult a)
+    public static void Write(string session, AnalysisResult a, string fileName = "report.html")
     {
         var m=JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json"));
         // The heat map comes from Analyze(heat: true); the report itself never reads the events again.
@@ -388,6 +414,8 @@ public static class HtmlReport
         var extRows=string.Join("",a.ExtensionBytes.OrderByDescending(p=>p.Value).Select(p=>$"<tr><td>{E(p.Key)}</td><td>{N(p.Value/1048576.0)} MiB</td></tr>"));
         var sizeRows=string.Join("",a.SizeDistribution.Select(p=>$"<tr><td>{E(p.Key)}</td><td>{p.Value:N0}</td></tr>"));
         var warnings=string.Join("",m.Warnings.Select(w=>$"<li>{E(w)}</li>"));
+        // Left-out processes that were busy on the same drives (counted without file names during the recording).
+        string others=OtherProcessIo.Summary(m,a,5) is { } busy?$"<p>記録しなかったプロセスで、同じドライブへのI/Oが多かったもの（ファイル名は残していません）: {E(busy)}</p>":"";
         string html=$$$"""
 <!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IO Recorder — {{{E(m.Label)}}}</title>
@@ -395,7 +423,7 @@ public static class HtmlReport
 :root{color-scheme:dark;font-family:Segoe UI,Meiryo,sans-serif;background:#0b101b;color:#e7edf7}*{box-sizing:border-box}body{max-width:1240px;margin:auto;padding:44px 28px}h1{font-size:32px;margin:8px 0}h2{font-size:19px}p,.muted{color:#9fadc5;line-height:1.8}.eyebrow{color:#69d8ce;letter-spacing:3px;font-size:12px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0}.card,section{background:#131c2c;border:1px solid #26334a;border-radius:16px;padding:22px}.card b{display:block;font-size:29px;margin-top:8px}section{margin-bottom:20px}canvas{width:100%;height:260px;display:block}#timeline{height:600px}select{max-width:100%;background:#0b101b;color:#e7edf7;padding:10px;border:1px solid #32415c;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:right;border-bottom:1px solid #27344c;padding:12px 8px}td:first-child,th:first-child{text-align:left;max-width:650px;overflow-wrap:anywhere}th{color:#9fadc5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.pill{display:inline-block;border:1px solid #31425f;border-radius:20px;padding:5px 13px;color:#69d8ce;margin-top:8px}#tip{height:24px;font-size:13px;color:#9fadc5}@media(max-width:750px){.cards,.grid{grid-template-columns:1fr 1fr}body{padding:20px 12px}.card b{font-size:23px}}
 </style><h1>{{{E(m.Label.Length>0?m.Label:"ファイルI/O 計測レポート")}}}</h1>
 <p>{{{E(m.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz"))}}} · {{{E(m.Machine)}}} · {{{N(a.DurationSeconds)}}} 秒</p>
-<span class="pill">{{{E(m.Options.Mode.ToString())}}} · {{{E(m.State)}}} · 内容データを含まない記録</span>
+<span class="pill">{{{E(m.Options.Mode.ToString())}}} · {{{E(m.State)}}} · 内容データを含まない記録</span>{{{(a.Locations.Count>0?"<p>場所を絞り込んだ集計です（この中のI/Oだけ）: "+E(LocationFilter.TextOf(a.Locations))+"</p>":"")}}}
 <div class="cards"><div class="card">Read（アプリ要求）<b>{{{N(a.ReadBytes/1048576.0)}}} <small>MiB</small></b><p>{{{a.Reads:N0}}} requests · ページング {{{(a.IoFlagsAvailable?N(a.PagingReadBytes/1048576.0)+" MiB":"判別不可")}}}</p></div><div class="card">Write（アプリ要求）<b>{{{N(a.WriteBytes/1048576.0)}}} <small>MiB</small></b><p>{{{a.Writes:N0}}} requests · ページング {{{(a.IoFlagsAvailable?N(a.PagingWriteBytes/1048576.0)+" MiB":"判別不可")}}}</p></div><div class="card">Read/Write P95<b>{{{P(a.P95Ms)}}}</b><p>P99 {{{P(a.P99Ms)}}}</p></div><div class="card">参照されたファイル<b>{{{a.FileManifest.Count:N0}}}</b><p>ユニークRead領域 ≥ {{{N(a.UniqueReadBytesLowerBound/1048576.0)}}} MiB</p></div></div>
 <section><h2>時間ごとの推移</h2><p>青: Read ／ 緑: Write。アプリ要求のファイルI/Oを1秒ごとに集計し、3つのグラフは同じ時間軸です。レイテンシは、その秒に始まった成功Read/WriteのP95（対数目盛・I/Oがない秒は線が切れます）。カーソルを重ねると値を表示します。</p><canvas id="timeline"></canvas><div id="tip"></div></section>
 <section><h2>ファイル内のReadアクセス</h2><p>横軸: 経過時間 ／ 縦軸: ファイル内の位置（観測サイズ、または最大Read位置まで）。色の明るさ: 読み込みバイト数。開始位置を64分割して集計しています。</p><select id="files"></select><canvas id="heat"></canvas><div id="heatTip"></div></section>
@@ -409,7 +437,7 @@ public static class HtmlReport
 <table><tr><th>分割単位</th><th>読み込み: 取得回数</th><th>取得量</th><th>効率</th><th>書き込み: 更新回数</th><th>アップロード量（下限）</th><th>アップロード量（上限）</th><th>効率</th><th>一部書き換え</th></tr>{{{chunkRows}}}</table></section>
 <div class="grid"><section><h2>拡張子別のRead + Write量</h2><table>{{{extRows}}}</table></section><section><h2>要求サイズの分布</h2><table>{{{sizeRows}}}</table></section></div>
 <section><h2>アクセス量の多いファイル（上位100件）</h2><table><tr><th>パス</th><th>Read回数</th><th>Write回数</th><th>Read MiB</th><th>Write MiB</th></tr>{{{rows}}}</table></section>
-<section><h2>記録の品質と測定範囲</h2><p>ETW欠落: {{{(m.EtwLossCountAvailable?m.EtwEventsLost.ToString("N0"):"未取得")}}} ／ 保存待ち行列の欠落: {{{m.QueueEventsDropped:N0}}} ／ 完了未取得: {{{a.MissingCompletions:N0}}} ／ 失敗した操作: {{{a.FailedOperations:N0}}} ／ 高速I/Oの拒否（すぐ出し直されたため数えない）: {{{a.FastIoRefusals:N0}}} ／ 対象のファイルへの他のプロセスのI/O（ページングI/O以外は集計に含めない）: {{{a.OtherProcessEvents:N0}}} ／ パス未解決: {{{m.UnresolvedPaths:N0}}}</p><ul>{{{warnings}}}</ul><p>レイテンシは開始と完了を対応付けた成功Read/Writeのみ（{{{a.LatencySamples:N0}}}件）。分位値は最大5%幅のヒストグラム上限値です。転送量は完了時のバイト数を優先し、完了不明の場合は要求サイズを使用します。{{{(a.IoFlagsAvailable?"Read/Write・レイテンシ・拡張子別・要求サイズ分布はアプリ要求（非ページング）のみで、キャッシュ補充・先読み・Lazy Writer・mmapのページングI/Oは別集計です。":"この記録にはIoFlagsがないため、ページングI/Oとアプリ要求を区別できず、両方を含む値です。")}}}ETWのファイルI/Oと物理ディスクI/Oは別集計です。クラウド転送量・mmap上の全参照・ロックAPIの引数はこの記録だけでは分かりません。ファイルサイズの照会値は非同期観測値で、初期サイズの確定値ではありません。ユニークRead領域は{{{(a.UniqueReadCapped?"集計上限に達した下限値":"観測範囲の区間和")}}}であり、LucidLinkの必要キャッシュ容量そのものではありません。</p></section>
+<section><h2>記録の品質と測定範囲</h2><p>ETW欠落: {{{(m.EtwLossCountAvailable?m.EtwEventsLost.ToString("N0"):"未取得")}}} ／ 保存待ち行列の欠落: {{{m.QueueEventsDropped:N0}}} ／ 完了未取得: {{{a.MissingCompletions:N0}}} ／ 失敗した操作: {{{a.FailedOperations:N0}}} ／ 高速I/Oの拒否（すぐ出し直されたため数えない）: {{{a.FastIoRefusals:N0}}} ／ 対象のファイルへの他のプロセスのI/O（ページングI/O以外は集計に含めない）: {{{a.OtherProcessEvents:N0}}} ／ パス未解決: {{{m.UnresolvedPaths:N0}}}</p>{{{others}}}<ul>{{{warnings}}}</ul><p>レイテンシは開始と完了を対応付けた成功Read/Writeのみ（{{{a.LatencySamples:N0}}}件）。分位値は最大5%幅のヒストグラム上限値です。転送量は完了時のバイト数を優先し、完了不明の場合は要求サイズを使用します。{{{(a.IoFlagsAvailable?"Read/Write・レイテンシ・拡張子別・要求サイズ分布はアプリ要求（非ページング）のみで、キャッシュ補充・先読み・Lazy Writer・mmapのページングI/Oは別集計です。":"この記録にはIoFlagsがないため、ページングI/Oとアプリ要求を区別できず、両方を含む値です。")}}}ETWのファイルI/Oと物理ディスクI/Oは別集計です。クラウド転送量・mmap上の全参照・ロックAPIの引数はこの記録だけでは分かりません。ファイルサイズの照会値は非同期観測値で、初期サイズの確定値ではありません。ユニークRead領域は{{{(a.UniqueReadCapped?"集計上限に達した下限値":"観測範囲の区間和")}}}であり、LucidLinkの必要キャッシュ容量そのものではありません。</p></section>
 <script>
 const series={{{JsonSerializer.Serialize(a.Timeline,JsonStore.Options)}}},duration={{{a.DurationSeconds.ToString(CultureInfo.InvariantCulture)}}},heats={{{JsonSerializer.Serialize(heats,JsonStore.Options)}}};
 function setup(id){const c=document.getElementById(id),d=devicePixelRatio||1;c.width=c.clientWidth*d;c.height=c.clientHeight*d;const x=c.getContext('2d');x.scale(d,d);return[c,x,c.clientWidth,c.clientHeight]}
@@ -442,6 +470,6 @@ const select=document.getElementById('files');heats.forEach((h,i)=>{let o=docume
 function heat(){const[c,x,w,h]=setup('heat');const data=heats[+select.value];if(!data){x.fillStyle='#9fadc5';x.fillText('Readイベントなし',20,40);return}let max=Math.max(1,...data.cells);for(let y=0;y<64;y++)for(let t=0;t<120;t++){let v=Math.log1p(data.cells[y*120+t])/Math.log1p(max);x.fillStyle=`rgb(${Math.round(18+v*70)},${Math.round(29+v*180)},${Math.round(47+v*145)})`;x.fillRect(t*w/120,y*h/64,Math.ceil(w/120),Math.ceil(h/64))}document.getElementById('heatTip').textContent='先頭 0 → '+(data.maxOffset/1048576).toFixed(2)+' MiB ／ 0 → '+duration.toFixed(1)+' 秒'}select.onchange=heat;window.onresize=()=>{timeline();heat()};timeline();heat();
 </script></html>
 """;
-        File.WriteAllText(Path.Combine(session,"report.html"),html,new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(session,fileName),html,new UTF8Encoding(false));
     }
 }

@@ -2,4 +2,5 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="4.0.0" />
   </ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="IoRecorder.Tests" /></ItemGroup>
 </Project>

@@ -19,6 +19,24 @@ public static class PathPolicy
         return p.Equals(r, StringComparison.OrdinalIgnoreCase) || p.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase);
     }
 
+    // The drive or share a path is on: "C:", "\\server\share", the device of a path no drive letter maps to, or "" when the
+    // path is not known. Called for every left-out event, so a drive path allocates nothing.
+    private static readonly string[] Drives = Enumerable.Range('A', 26).Select(c => (char)c + ":").ToArray();
+    public static string VolumeOf(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return "";
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) path = @"\\" + path[8..];
+        else if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) path = path[4..];
+        if (path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0])) return Drives[char.ToUpperInvariant(path[0]) - 'A'];
+        if (path.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            var parts = path[2..].Split('\\', 3);
+            return parts.Length >= 2 ? @"\\" + parts[0] + @"\" + parts[1] : @"\\" + parts[0];
+        }
+        if (path.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)) { int second = path.IndexOf('\\', 8); return second < 0 ? path : path[..second]; }
+        return path.Split('\\')[0];
+    }
+
     public static string DatasetRelative(string source)
     {
         var path = source.Replace('/', '\\');

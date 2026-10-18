@@ -119,29 +119,37 @@ public sealed class ReplayComparison
     public List<ProcessComparison> Processes { get; set; } = [];
     public ComparisonScope Scope { get; set; }
     public int? ReplayProcessId { get; set; }
+    // The folders of the original record both sides are narrowed to; empty for every location.
+    public List<string> Locations { get; set; } = [];
     public const string ReplayProcessSuffix = "（再生）";
     // Windows Search read the test target during the replay (its I/O mixes into the test); null when it did not.
     public string? IndexerNote => Processes.Where(p => p.Process.StartsWith("Search", StringComparison.OrdinalIgnoreCase)).Sum(p => p.ReplayOperations) is > 0 and var n
         ? $"再生中に、Windowsの検索インデクサーが試験先に {n:N0} 件のI/Oを出していました。インデックスの対象外のフォルダ（例: C:\\IOTest）で試すと、比較が安定します。" : null;
 
-    public static ReplayComparison Build(string session, string trace, ComparisonScope scope = ComparisonScope.All)
+    // locations: both sides narrowed to these folders of the original record (the replay side by the original paths its dummy
+    // paths stand for).
+    public static ReplayComparison Build(string session, string trace, ComparisonScope scope = ComparisonScope.All, LocationFilter? locations = null)
     {
         var link = JsonStore.Read<ReplayLink>(Path.Combine(trace, ReplayCapture.LinkFile));
         var paths = new Dictionary<string,string>(link.Paths, StringComparer.OrdinalIgnoreCase);
         // The dummy's marker file (and the temporary file it is saved through) is the tool's own, not part of the test.
         string marker = Path.Combine(link.Dataset, DatasetBuilder.Marker);
         bool Tool(IoEvent e) => e.Path.StartsWith(marker, StringComparison.OrdinalIgnoreCase);
-        var (processes, replayPid) = CountProcesses(session, trace, link, Tool);
+        locations ??= new();
+        bool InReplay(IoEvent e) => locations.IsEmpty || paths.TryGetValue(e.Path, out var p) && locations.Includes(p);
+        var (processes, replayPid) = CountProcesses(session, trace, link, Tool, e => locations.Includes(e.Path), InReplay);
         AnalysisResult original, replay;
-        if (scope == ComparisonScope.All) { original = SessionAnalyzer.Load(session); replay = Measure(trace, e => !Tool(e)); }
+        if (scope == ComparisonScope.All) { original = SessionAnalyzer.Load(session, null, locations); replay = Measure(trace, e => !Tool(e) && InReplay(e)); }
         else
         {
             if (replayPid is not { } pid) throw new InvalidDataException("この再生の記録では、再生したプロセスを特定できません。");
-            var o = link.Options;
-            original = o.ProcessOnly || o.RootOnly ? Measure(session, e => !(o.ProcessOnly && !e.MatchesProcess) && !(o.RootOnly && !e.MatchesRoot)) : SessionAnalyzer.Load(session);
-            replay = Measure(trace, e => e.ProcessId == pid && !Tool(e));
+            // What the replay was asked to send: the original within its scope and the folders its dummy was made for.
+            var o = link.Options; var made = LocationFilter.Of(o.Locations);
+            original = o.ProcessOnly || o.RootOnly || !made.IsEmpty || !locations.IsEmpty
+                ? Measure(session, e => !(o.ProcessOnly && !e.MatchesProcess) && !(o.RootOnly && !e.MatchesRoot) && made.Includes(e.Path) && locations.Includes(e.Path)) : SessionAnalyzer.Load(session);
+            replay = Measure(trace, e => e.ProcessId == pid && !Tool(e) && InReplay(e));
         }
-        var c = new ReplayComparison { Link = link, Original = original, Replay = replay, Processes = processes, Scope = scope, ReplayProcessId = replayPid };
+        var c = new ReplayComparison { Link = link, Original = original, Replay = replay, Processes = processes, Scope = scope, ReplayProcessId = replayPid, Locations = [.. locations.Folders] };
         var (originalTimeline, originalSeconds) = Align(original);
         var (replayTimeline, replaySeconds) = Align(replay);
         c.OriginalTimeline = originalTimeline; c.ReplayTimeline = replayTimeline;
@@ -202,14 +210,14 @@ public sealed class ReplayComparison
 
     // Operations and application bytes per process on both sides; the replay process is marked. Without its id in the link
     // (older recordings), it is the IO Recorder process with the most I/O in the recording of the replay.
-    private static (List<ProcessComparison> Rows, int? ReplayPid) CountProcesses(string session, string trace, ReplayLink link, Func<IoEvent,bool> tool)
+    private static (List<ProcessComparison> Rows, int? ReplayPid) CountProcesses(string session, string trace, ReplayLink link, Func<IoEvent,bool> tool, Func<IoEvent,bool> inOriginal, Func<IoEvent,bool> inReplay)
     {
-        Dictionary<(int Pid, string Name), long[]> Count(string folder)
+        Dictionary<(int Pid, string Name), long[]> Count(string folder, Func<IoEvent,bool> include)
         {
             var counts = new Dictionary<(int, string), long[]>();
             foreach (var e in RecordLog.Read<IoEvent>(folder, RecordLog.Events))
             {
-                if (!e.IsFileIo || e.IsFastIoRefusal || tool(e)) continue;
+                if (!e.IsFileIo || e.IsFastIoRefusal || tool(e) || !include(e)) continue;
                 var key = (e.ProcessId, string.IsNullOrEmpty(e.ProcessName) ? $"PID {e.ProcessId}" : e.ProcessName);
                 if (!counts.TryGetValue(key, out var c)) counts[key] = c = new long[3];
                 c[0]++;
@@ -219,7 +227,7 @@ public sealed class ReplayComparison
             }
             return counts;
         }
-        var original = Count(session); var replay = Count(trace);
+        var original = Count(session, inOriginal); var replay = Count(trace, inReplay);
         int? pid = link.ProcessId ?? replay.Where(p => p.Key.Name.StartsWith("IORecorder", StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(p => p.Value[0]).Select(p => (int?)p.Key.Pid).FirstOrDefault();
         // original operations, replay operations, original read, replay read, original write, replay write

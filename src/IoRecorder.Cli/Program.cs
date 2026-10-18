@@ -37,13 +37,22 @@ internal static class Cli
                     IncludeChildren=!a.Flag("no-children"),ProbeSizes=!a.Flag("no-size-probe"),OpenFilesAtStart=!a.Flag("no-open-files"),CollectDisk=!a.Flag("no-disk"),
                     LucidExecutable=a.Optional("lucid"),LucidInstance=a.Optional("lucid-id")
                 };
+                // --launch: the application (a program file or its shortcut) is started once the recording runs, so its start-up is in it.
+                if(a.Optional("launch") is { } launch)
+                {
+                    var app=AppLauncher.FromFile(Path.GetFullPath(launch)) ?? throw new ArgumentException("--launch のアプリが見つかりません: "+launch);
+                    if(a.Optional("launch-args") is { } extra) app.Arguments=extra;
+                    if(AppLauncher.IsRunning(app)) { Console.WriteLine($"注意: {app.Name}（{app.ProcessName}）はもう起動しているので、起動はしません。起動したときの読み込みは記録に入りません。"); options.ProcessNames=[.. options.ProcessNames,app.ProcessName]; }
+                    else options.Launch=app;
+                }
                 int duration=a.Int("duration",0);
                 // Without --out: Documents\IORecorder\Recordings\yyyyMMdd-HHmmss_<label or what is measured>.
-                string subject=a.Optional("label") ?? string.Join("・",options.ProcessNames.Select(Path.GetFileNameWithoutExtension).Concat(options.ProcessIds.Select(p=>"PID"+p)).DefaultIfEmpty(string.Join("・",roots.Select(r=>Path.GetFileName(r.TrimEnd('\\'))))));
+                string subject=a.Optional("label") ?? string.Join("・",options.ProcessNames.Concat(options.Launch is { } started?new[] { started.ProcessName }:Array.Empty<string>()).Select(Path.GetFileNameWithoutExtension).Distinct(StringComparer.OrdinalIgnoreCase).Concat(options.ProcessIds.Select(p=>"PID"+p)).DefaultIfEmpty(string.Join("・",roots.Select(r=>Path.GetFileName(r.TrimEnd('\\'))))));
                 string output=Path.GetFullPath(a.Optional("out") ?? AppPaths.NewFolder(AppPaths.Recordings,subject));
                 var recorder=new EtwRecorder();
-                await recorder.RecordAsync(output,options,a.Get("label",subject.Length>0?subject:"I/O capture"),stop.Token,progress,()=>
+                var recorded=await recorder.RecordAsync(output,options,a.Get("label",subject.Length>0?subject:"I/O capture"),stop.Token,progress,()=>
                 { if(duration>0) stop.CancelAfter(TimeSpan.FromSeconds(duration)); if(a.Optional("ready") is { } path) File.WriteAllText(path,"ready"); });
+                if(OtherProcessIo.Summary(recorder.Manifest,recorded,5) is { } others) Console.WriteLine("記録しなかったプロセスで、同じドライブへのI/Oが多かったもの: "+others);
                 Console.WriteLine("保存先: "+output); return 0;
             }
             case "generate":
@@ -56,7 +65,7 @@ internal static class Cli
                 if(TestLocation.IndexWarning(a.Required("target")) is { } indexed) Console.WriteLine("注意: "+indexed);
                 if(File.Exists(planFile)) BenchmarkPlanner.CheckSpace(JsonStore.Read<BenchmarkPlan>(planFile),a.Required("target"),includeDummy:true);
                 // The same --process-only / --root-only as the replay: only the files that replay touches are made.
-                var m=await DatasetBuilder.GenerateAsync(session,a.Required("target"),seed,progress,stop.Token,processOnly:a.Flag("process-only"),rootOnly:a.Flag("root-only"));
+                var m=await DatasetBuilder.GenerateAsync(session,a.Required("target"),seed,progress,stop.Token,processOnly:a.Flag("process-only"),rootOnly:a.Flag("root-only"),locations:Locations(a,session));
                 if(m.ExcludedPaths>0) Console.WriteLine($"対象外 {m.ExcludedPaths:N0} パス（変換・作成できない名前。再生ではスキップします）。例と理由は {DatasetBuilder.Marker} の notes にあります。");
                 return 0;
             }
@@ -90,7 +99,7 @@ internal static class Cli
                 string trace=a.Optional("trace") ?? ReplayCapture.List(session).Select(t=>t.Folder).FirstOrDefault() ?? throw new ArgumentException("この記録には、記録付きの再生がありません（replay --record で再生してください）。");
                 // --scope replayed: only the requests the replay process sent, against the original within the replay's scope.
                 var scope=a.Get("scope","all").ToLowerInvariant() switch { "all"=>ComparisonScope.All,"replayed"=>ComparisonScope.Replayed,_=>throw new ArgumentException("--scope は all か replayed です。") };
-                var c=ReplayComparison.Build(session,Path.GetFullPath(trace),scope);
+                var c=ReplayComparison.Build(session,Path.GetFullPath(trace),scope,Locations(a,session));
                 Console.WriteLine($"元の記録: {session}\n再生の記録: {trace}（{c.Link.Options.Mode}、再生 {c.Link.ElapsedSeconds:N1} 秒）");
                 Console.WriteLine(scope==ComparisonScope.Replayed?$"比べる範囲: 再生した要求だけ（再生したプロセス PID {c.ReplayProcessId}）\n":"比べる範囲: 全体（すべてのプロセス）\n");
                 Console.WriteLine($"  {"項目",-22} {"元",14} {"再生",14} {"差",10}");
@@ -128,8 +137,22 @@ internal static class Cli
                 return 0;
             case "analyze":
                 var analysis=SessionAnalyzer.Export(a.Required("session"),progress);
+                // Narrowed to some folders as well: its own summary and report (report-locations.html) next to the whole one.
+                if(Locations(a,a.Required("session")) is { IsEmpty: false } narrowed) analysis=SessionAnalyzer.Load(a.Required("session"),progress,narrowed);
                 if(a.Flag("csv")) SessionAnalyzer.ExportCsv(a.Required("session"),progress);
                 Console.WriteLine($"Read {analysis.Reads:N0} / Write {analysis.Writes:N0} / P95 {analysis.P95Ms:N2} ms"); return 0;
+            case "export":
+            {
+                // One zip of the record to send (without the summaries, which are made again when it is opened).
+                string folder=a.Optional("out") ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                var zip=await RecordArchive.ExportAsync(a.Required("session"),folder,null,stop.Token);
+                Console.WriteLine("zipに書き出しました: "+zip); return 0;
+            }
+            case "import":
+            {
+                var folder=RecordArchive.Import(a.Required("zip"),a.Optional("out") ?? AppPaths.Recordings,null,stop.Token);
+                Console.WriteLine("取り込みました: "+folder); return 0;
+            }
             case "demo":
                 Console.WriteLine("合成データ: "+DemoSession.Create(a.Optional("out") ?? AppPaths.NewFolder(AppPaths.Demo,"demo"))); return 0;
             case "workload":
@@ -138,6 +161,16 @@ internal static class Cli
                 return await Verify(a.Optional("out") ?? AppPaths.NewFolder(AppPaths.Verification,"verify-etw"),progress);
             default: throw new ArgumentException("不明なコマンドです: "+args[0]);
         }
+    }
+    // The folders a command narrows the record to: --location (repeatable), else the record's own (02 「場所で絞り込む」),
+    // and none with --all-locations.
+    private static LocationFilter Locations(Arguments a,string session)
+    {
+        if(a.Flag("all-locations")) return new();
+        var given=a.Many("location");
+        var filter=given.Length>0?LocationFilter.Of(given):LocationFilter.Load(session);
+        if(!filter.IsEmpty) Console.WriteLine("場所の絞り込み: "+filter.Text+(given.Length>0?"":"（記録に保存された絞り込み。--all-locations で全部）"));
+        return filter;
     }
     private static string Value(ComparisonUnit unit,double? value)=>value is not { } v?"—":unit switch
     {
@@ -255,9 +288,12 @@ record     --mode Process|Folder|Hybrid --process AfterFX --pid 1234 --root D:\P
            [--duration 30] [--label "LucidLink warm"] [--out <フォルダ>]
            [--root-device \Device\HarddiskVolume9\Production]
            [--no-children] [--no-size-probe] [--no-open-files] [--no-disk] [--lucid lucid.exe] [--lucid-id ID]
+           [--launch "C:\Program Files\...\AfterFX.exe" または ショートカット(.lnk)] [--launch-args "..."]
+             --launch: 記録を始めてから、そのアプリを（管理者ではない、ふだんの権限で）起動する。起動時の読み込みも記録に入る
 resolve-root --root L:\Production  (通常権限で実行。昇格後に見えないドライブのデバイスパス・UNCを表示)
 generate   --session <記録フォルダ> --target L:\Bench\20261017-153012_AfterFX [--seed 42]
            [--process-only] [--root-only]  (replay と同じ範囲を指定。その範囲が使うファイルだけ作る)
+           [--location Z:\Project ...] [--all-locations]  (この場所の中のI/Oだけでダミーを作る。replay はダミーの場所だけを再生する)
 replay     --session <記録フォルダ> --target L:\Bench\20261017-153012_AfterFX
            [--timing ThinkTime|Timeline] [--speed 1] [--workers 8]
              ThinkTime（既定）: 完了を待ち、記録と同じ間隔で次を出す（作業時間の比較向け）
@@ -267,10 +303,15 @@ replay     --session <記録フォルダ> --target L:\Bench\20261017-153012_Afte
              --record: 再生中の試験先のI/OもETWで記録する（管理者権限）。compare で元の記録と比べる
 compare    --session <記録フォルダ> [--trace <記録フォルダ>\replays\<日時>]  (元の記録と、その再生の記録を比べる。省略時は最新)
            [--scope all|replayed]  (replayed: 再生したプロセスの要求だけを、元の記録の再生対象と比べる。既定は all)
+           [--location Z:\Project ...] [--all-locations]  (両方とも、元の記録のこの場所の中のI/Oだけで比べる)
 reset      --target L:\Bench\20261017-153012_AfterFX  (実行済みのダミーを生成直後の状態に戻す。書き換わった部分だけ書き戻す)
 analyze    --session <記録フォルダ> [--csv]  (--csv で全イベントを events.csv にも書き出す)
+           [--location Z:\Project ...] [--all-locations]  (この場所の中のI/Oだけの集計も作る: report-locations.html)
+--location を省略すると、画面の「場所で絞り込む」で記録に保存した場所を使います（--all-locations で全部）。
 bench      --config <構成ファイル> [--seed 42 または --seed "LucidLink試験A"] [--out <フォルダ>]
            構成ファイルとseedから決まったI/O列を作成。続けて generate / replay で実行
+export     --session <記録フォルダ> [--out <フォルダ>]  (記録を1つのzipにまとめる。既定はデスクトップ。集計やレポートは入れない)
+import     --zip <記録のzip> [--out <フォルダ>]  (zipの記録を展開する。既定は Recordings)
 demo       [--out <フォルダ>]
 verify-etw [--out <フォルダ>]  (管理者権限・実I/Oによる自動テスト)
 

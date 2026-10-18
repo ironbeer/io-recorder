@@ -35,6 +35,8 @@ public sealed class ReplayEngine
             ?"このダミーは実行済みです。同じ初期状態で試験するため、「ダミーを初期状態に戻す」か、ダミーを生成し直してください。"
             :"このダミーは生成が完了していません。ダミーを生成し直してください。");
         m.Paths=new(m.Paths,StringComparer.OrdinalIgnoreCase);
+        // The dummy holds only the files of the folders it was made for; the replay replays only the I/O inside them.
+        options.Locations=[.. m.Locations]; var locations=LocationFilter.Of(m.Locations);
         // A path that would leave the dummy or pass through a junction / symbolic link inside it is skipped, not the whole run.
         var unsafePaths=PathPolicy.UnsafeInside(dataset,m.Paths.Values.Concat(m.Directories).Concat(m.InitialSizes.Keys));
         var result=new ReplaySummary { SessionId=m.SessionId,Options=options };
@@ -43,6 +45,7 @@ public sealed class ReplayEngine
         if(TestLocation.IndexWarning(dataset) is { } indexed) result.Notes.Add(indexed);
         if(unsafePaths.Count>0)
             result.Notes.Add($"ダミーのフォルダの外を指す、またはリンクを経由するため、{unsafePaths.Count:N0} パスへの操作を対象外にしました（SkippedUnsafePath）。例: "+string.Join(" / ",unsafePaths.Take(5)));
+        if(!locations.IsEmpty) result.Notes.Add("場所を絞り込んで作ったダミーです。この中のI/Oだけを再生しました: "+locations.Text);
         if(m.ExcludedPaths>0) result.Notes.Add($"ダミー生成時に {m.ExcludedPaths:N0} パスを対象外にしています（変換できない名前など）。これらへの操作は SkippedUnresolvedPath です。");
         if(original.State=="SyntheticBenchmark") result.Notes.Add("合成ベンチマークの実行です（構成ファイルとseedから作ったI/O列）。");
         result.Notes.Add("スレッド内と同じファイルオブジェクトの順序を維持し、並列数に上限を設けます。OSスケジューラによる投入時刻の差を記録します。");
@@ -57,6 +60,7 @@ public sealed class ReplayEngine
         {
             if(token.IsCancellationRequested) break;
             paging.Observe(e);
+            if(!locations.Includes(e.Path)) continue;
             if(e.IsFileIo && !(options.ProcessOnly&&!e.MatchesProcess) && !(options.RootOnly&&!e.MatchesRoot)) total++;
             if(e.ByOtherProcess) continue;
             if(!e.Failed && e.Operation is IoOperation.Write or IoOperation.SetEndOfFile or IoOperation.SetAllocation or IoOperation.Flush && !(e.IsPagingIo && options.Paging!=PagingReplay.All))
@@ -147,7 +151,7 @@ public sealed class ReplayEngine
             foreach(var e in EventOrder.Read(session,token))
             {
                 token.ThrowIfCancellationRequested();
-                if(!e.IsFileIo || options.ProcessOnly&&!e.MatchesProcess || options.RootOnly&&!e.MatchesRoot) continue;
+                if(!e.IsFileIo || options.ProcessOnly&&!e.MatchesProcess || options.RootOnly&&!e.MatchesRoot || !locations.Includes(e.Path)) continue;
                 if(!clock.IsRunning) { if(options.TrimLeadingIdle) baseUs=e.StartUs; clock.Start(); reporterTask=StartReporter(); }
                 long plannedUs=(long)((e.StartUs-baseUs)/options.Speed);
                 // Another process's I/O on the target's files is the recorded machine's own (its cache, antivirus): kept for
