@@ -10,7 +10,7 @@ namespace IoRecorder.Core;
 internal sealed class ProcessTracker
 {
     private sealed class Entry(string name,int parent,bool target)
-    { public string Name=name; public int Parent=parent; public bool Target=target; }
+    { public string Name=name; public int Parent=parent; public bool Target=target; public bool Ended; }
     private readonly object _gate=new();
     private readonly Dictionary<int,Entry> _processes=[];
     private readonly HashSet<int> _explicit;
@@ -56,10 +56,13 @@ internal sealed class ProcessTracker
         lock(_gate) if(_processes.TryGetValue(pid,out var e) && e.Name.Equals(Path.GetFileNameWithoutExtension(name),StringComparison.OrdinalIgnoreCase)) return;
         Started(pid,name,parent,program);
     }
-    public void Remove(int pid) { lock(_gate) { _processes.Remove(pid); _explicit.Remove(pid); } }
+    // A process that ended keeps its name and decision: the closing of its files and the unmapping of its memory are reported
+    // after its end. Its PID is decided again only when a new process starts with it (Started).
+    public void Ended(int pid) { lock(_gate) { if(_processes.TryGetValue(pid,out var p)) p.Ended=true; _explicit.Remove(pid); } }
     public string Name(int pid) { lock(_gate) return _processes.TryGetValue(pid,out var p)?p.Name:pid==4?"System":"PID "+pid; }
     public bool Matches(int pid) { lock(_gate) return _processes.TryGetValue(pid,out var p)?p.Target:_explicit.Contains(pid); }
-    public int[] TargetPids() { lock(_gate) return _processes.Where(p=>p.Value.Target).Select(p=>p.Key).ToArray(); }
+    // The targets still running.
+    public int[] TargetPids() { lock(_gate) return _processes.Where(p=>p.Value.Target && !p.Value.Ended).Select(p=>p.Key).ToArray(); }
 
     private static List<(int,string,int,long?,string?)> Snapshot()
     {

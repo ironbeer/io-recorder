@@ -244,7 +244,7 @@ public sealed class EtwRecorder
         // Every finished or abandoned request goes through here so that renames wait for their destination.
         void Emit(IoEvent e) { if(e.Operation==IoOperation.Rename) renames.Completed(e,lastUs); else Publish(e); }
         var others=new OtherProcessCounter();
-        IoEvent? Create(TraceEvent data,IoOperation op,ulong fileObject,string path,ulong fileKey=0,long size=0)
+        IoEvent? Create(TraceEvent data,IoOperation op,ulong fileObject,string path,ulong fileKey=0,long size=0,uint ioFlags=0)
         {
             lastUs=Us(data);
             if(data.ProcessID==Environment.ProcessId && !options.IncludeOwnProcess) return null;
@@ -258,11 +258,11 @@ public sealed class EtwRecorder
             bool pm=tracker.Matches(data.ProcessID),fm=false;
             if(options.Mode!=CaptureMode.Folder)
             {
-                if(pm) { if(fileKey!=0) targetKeys.Add(fileKey); if(fileObject!=0) targetObjects.Add(fileObject); }
+                if(pm) { if(UsesFileData(op,ioFlags)) { if(fileKey!=0) targetKeys.Add(fileKey); if(fileObject!=0) targetObjects.Add(fileObject); } }
                 else fm=fileKey!=0 && targetKeys.Contains(fileKey) || fileObject!=0 && targetObjects.Contains(fileObject);
             }
             bool match=options.Mode switch { CaptureMode.Process=>pm||fm,CaptureMode.Folder=>rm,_=>pm||rm||fm };
-            if(path.Length==0)
+            if(path.Length==0 && NeedsPath(op))
             {
                 Interlocked.Increment(ref _unresolved);
                 var name=tracker.Name(data.ProcessID);
@@ -319,7 +319,7 @@ public sealed class EtwRecorder
         }
         void ReadWrite(FileIOReadWriteTraceData d,IoOperation op)
         {
-            var e=Create(d,op,d.FileObject,d.FileName,d.FileKey,(uint)d.IoSize);
+            var e=Create(d,op,d.FileObject,d.FileName,d.FileKey,(uint)d.IoSize,unchecked((uint)d.IoFlags));
             if(e is not null) { e.Offset=d.Offset; e.Size=(uint)d.IoSize; e.IoFlags=unchecked((uint)d.IoFlags); }
             Begin(d.IrpPtr,e);
         }
@@ -339,7 +339,7 @@ public sealed class EtwRecorder
         string? Program(ProcessTraceData d)=>tracker.FollowsFolders?AppLauncher.ProgramOf(d.CommandLine) ?? AppLauncher.ProgramOf(d.ProcessID):null;
         kernel.ProcessStart+=d=> { tracker.Started(d.ProcessID,d.ImageFileName,d.ParentID,Program(d)); Proc(new() { TimeUs=Us(d),Kind="Start",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
         kernel.ProcessDCStart+=d=> { tracker.Running(d.ProcessID,d.ImageFileName,d.ParentID,Program(d)); Proc(new() { TimeUs=Us(d),Kind="Running",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,CommandLine=d.CommandLine,SessionId=d.SessionID }); };
-        kernel.ProcessStop+=d=> { Proc(new() { TimeUs=Us(d),Kind="Stop",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,ExitStatus=d.ExitStatus }); tracker.Remove(d.ProcessID); };
+        kernel.ProcessStop+=d=> { Proc(new() { TimeUs=Us(d),Kind="Stop",Pid=d.ProcessID,ParentPid=d.ParentID,Name=d.ImageFileName,ExitStatus=d.ExitStatus }); tracker.Ended(d.ProcessID); };
         void Name(FileIONameTraceData d)
         {
             if(d.FileKey==0) return;
@@ -452,6 +452,18 @@ public sealed class EtwRecorder
         progress?.Report("計測停止。レポートを作成しています…");
         return await Task.Run(()=>SessionAnalyzer.Export(output,progress));
     }
+    // A target's operation that makes its file one whose I/O by other processes is kept (the cache written out, an antivirus
+    // scan): reading or writing the file's data. Opening a file, loading it as a library (paging I/O) or listing a folder does
+    // not: every program does that with shared files (system libraries, fonts, the user's folder).
+    internal static bool UsesFileData(IoOperation op,uint ioFlags)=>op switch
+    {
+        IoOperation.Read or IoOperation.Write=>(ioFlags&0x42)==0,
+        IoOperation.SetEndOfFile or IoOperation.SetAllocation or IoOperation.Flush=>true,
+        _=>false
+    };
+    // File I/O requests whose path stayed unknown are counted as such; memory views, page faults and disk I/O name no file path
+    // by their nature (a view of memory backed by the page file, the file system's own data on the disk).
+    internal static bool NeedsPath(IoOperation op)=>op is not (IoOperation.HardFault or IoOperation.DiskRead or IoOperation.DiskWrite or IoOperation.MapView or IoOperation.UnmapView);
     // Free space for the record's drive (null for a network path or when it cannot be read).
     private static long? FreeBytes(string folder)
     {

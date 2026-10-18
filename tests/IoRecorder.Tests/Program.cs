@@ -813,7 +813,9 @@ await Test("process tracking: children stay recorded after their parent ends; a 
     Check(!running.Matches(30),"a process whose parent PID was reused");
     // A launcher (a target by name) starts the main program and ends; the program then starts a renderer.
     var started=new ProcessTracker(new RecordingOptions { ProcessNames=["Launcher"] },[]);
-    started.Started(40,"Launcher.exe",1); started.Started(41,"Main.exe",40); started.Remove(40); started.Started(42,"Render.exe",41);
+    started.Started(40,"Launcher.exe",1); started.Started(41,"Main.exe",40); started.Ended(40); started.Started(42,"Render.exe",41);
+    // The closing of an ended process's files and the unmapping of its memory are reported after its end.
+    Check(started.Matches(40) && started.Name(40)=="Launcher" && !started.TargetPids().Contains(40),"an ended process keeps its name and decision, and is not sampled");
     Check(started.Matches(41)&&started.Matches(42),"the program and its renderer after the launcher ended");
     // The ended launcher's PID is reused by an unrelated program: neither it nor its child is a target.
     started.Started(40,"Unrelated.exe",1); started.Started(43,"Child.exe",40);
@@ -821,6 +823,16 @@ await Test("process tracking: children stay recorded after their parent ends; a 
     Check(started.TargetPids().Order().SequenceEqual(new[] { 41,42 }),"targets: "+string.Join(",",started.TargetPids()));
     var alone=new ProcessTracker(new RecordingOptions { ProcessNames=["AfterFX"],IncludeChildren=false },[(10,"AfterFX.exe",1,100,null),(11,"helper.exe",10,200,null)]);
     Check(alone.Matches(10)&&!alone.Matches(11),"without children");
+    return Task.CompletedTask;
+});
+
+await Test("recording: other processes are followed on the files whose data the target used; a path is expected of file requests only",()=>
+{
+    Check(EtwRecorder.UsesFileData(IoOperation.Read,0) && EtwRecorder.UsesFileData(IoOperation.Write,0) && EtwRecorder.UsesFileData(IoOperation.SetEndOfFile,0) && EtwRecorder.UsesFileData(IoOperation.Flush,0),"reading, writing, sizing, flushing");
+    Check(!EtwRecorder.UsesFileData(IoOperation.Read,0x2) && !EtwRecorder.UsesFileData(IoOperation.Read,0x40) && !EtwRecorder.UsesFileData(IoOperation.Open,0)
+        && !EtwRecorder.UsesFileData(IoOperation.DirectoryEnumerate,0) && !EtwRecorder.UsesFileData(IoOperation.QueryInfo,0) && !EtwRecorder.UsesFileData(IoOperation.MapView,0),"loading a library (paging), opening, listing, querying, mapping");
+    Check(EtwRecorder.NeedsPath(IoOperation.Read) && EtwRecorder.NeedsPath(IoOperation.Close) && !EtwRecorder.NeedsPath(IoOperation.MapView) && !EtwRecorder.NeedsPath(IoOperation.UnmapView)
+        && !EtwRecorder.NeedsPath(IoOperation.HardFault) && !EtwRecorder.NeedsPath(IoOperation.DiskRead),"memory views, page faults and disk I/O are not unresolved paths");
     return Task.CompletedTask;
 });
 
