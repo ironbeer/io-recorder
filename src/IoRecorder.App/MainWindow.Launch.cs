@@ -26,7 +26,14 @@ public partial class MainWindow
         public event PropertyChangedEventHandler? PropertyChanged;
     }
 
-    private void ChooseApp(object sender,RoutedEventArgs e)=>AppDialog().ShowDialog();
+    // 「アプリを選ぶ…」, or 「キャンセル」 once an application is chosen: it is no longer measured, and the process box loses its
+    // name when it was set from it.
+    private void AppButtonClick(object sender,RoutedEventArgs e)
+    {
+        if(_launchApp is not { } app) { AppDialog().ShowDialog(); return; }
+        if(ProcessBox.Text.Trim().Equals(app.ProcessName,StringComparison.OrdinalIgnoreCase)) ProcessBox.Text="";
+        SetLaunchApp(null); SaveSettings();
+    }
     // The Start menu applications to choose from (loaded when the dialog opens, their icons after).
     private Window AppDialog()
     {
@@ -93,14 +100,15 @@ public partial class MainWindow
         }
         UpdateLaunchUi();
     }
-    private void ClearApp(object sender,RoutedEventArgs e) { SetLaunchApp(null); SaveSettings(); }
     private void LaunchChanged(object sender,RoutedEventArgs e) { if(IsLoaded) UpdateLaunchUi(); }
     private void UpdateLaunchUi()
     {
         bool chosen=_launchApp is not null;
         AppText.Text=_launchApp is { } app?$"{app.Name}\n{app.Path}":"未選択（下の「プロセス名」か「対象フォルダ」で指定します）";
         AppIcon.Source=_launchApp is { } shown?ShellIcon.Of(shown.Path):null; AppIcon.Visibility=AppIcon.Source is null?Visibility.Collapsed:Visibility.Visible;
-        LaunchBox.IsEnabled=chosen; ClearAppButton.IsEnabled=chosen;
+        LaunchBox.IsEnabled=chosen;
+        AppButton.Content=chosen?"キャンセル":"アプリを選ぶ…";
+        AppButton.ToolTip=chosen?"このアプリを測るのをやめます。別のアプリにするときは、キャンセルしてから選び直します。":null;
         StartButton.Content=chosen && LaunchBox.IsChecked==true?"●  計測を開始してアプリを起動":"●  計測を開始";
     }
 }
