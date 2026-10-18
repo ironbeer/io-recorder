@@ -16,8 +16,14 @@ IO Recorderは、ETWでファイルI/Oを記録するために管理者権限で
 
 ## 配布物の確かめ方
 
-リリースのzipには、SHA-256の値（`.sha256`）を添えています。公開リポジトリのリリースでは、zipと中の実行ファイルが、このリポジトリのコードからGitHub Actionsでビルドされたことを、GitHub CLIで確かめられます。
+リリースのzipには、SHA-256の値（`.sha256`）を添えています。
 
 ```bash
-gh attestation verify IORecorder-v0.1.0-win-x64.zip -R ironbeer/io-recorder
+sha256sum -c IORecorder-v0.4.0-win-x64.zip.sha256
+```
+
+v0.4.0以降のリリースでは、zipと中の実行ファイル（`IORecorder.exe`・`iorecorder-cli.exe`）が、このリポジトリのコードからGitHub Actionsでビルドされたことを、GitHub CLIで確かめられます（ビルドの来歴の証明）。v0.1.0〜v0.3.0は、リポジトリを公開する前にビルドしたので、この証明はありません。
+
+```bash
+gh attestation verify IORecorder-v0.4.0-win-x64.zip -R ironbeer/io-recorder
 ```
