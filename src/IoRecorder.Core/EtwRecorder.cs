@@ -262,7 +262,7 @@ public sealed class EtwRecorder
                 else fm=fileKey!=0 && targetKeys.Contains(fileKey) || fileObject!=0 && targetObjects.Contains(fileObject);
             }
             bool match=options.Mode switch { CaptureMode.Process=>pm||fm,CaptureMode.Folder=>rm,_=>pm||rm||fm };
-            if(path.Length==0 && NeedsPath(op))
+            if(path.Length==0 && CountsUnresolved(op,options.Mode,pm||fm))
             {
                 Interlocked.Increment(ref _unresolved);
                 var name=tracker.Name(data.ProcessID);
@@ -464,6 +464,9 @@ public sealed class EtwRecorder
     // File I/O requests whose path stayed unknown are counted as such; memory views, page faults and disk I/O name no file path
     // by their nature (a view of memory backed by the page file, the file system's own data on the disk).
     internal static bool NeedsPath(IoOperation op)=>op is not (IoOperation.HardFault or IoOperation.DiskRead or IoOperation.DiskWrite or IoOperation.MapView or IoOperation.UnmapView);
+    // A file request whose path stayed unknown is counted when it could belong to the record: a target's, or one on a target's
+    // file; with folders recorded, any process's (the folder of an unknown path is not known either).
+    internal static bool CountsUnresolved(IoOperation op,CaptureMode mode,bool target)=>NeedsPath(op) && (target || mode!=CaptureMode.Process);
     // Free space for the record's drive (null for a network path or when it cannot be read).
     private static long? FreeBytes(string folder)
     {

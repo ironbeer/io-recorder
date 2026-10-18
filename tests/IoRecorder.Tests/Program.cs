@@ -833,6 +833,9 @@ await Test("recording: other processes are followed on the files whose data the 
         && !EtwRecorder.UsesFileData(IoOperation.DirectoryEnumerate,0) && !EtwRecorder.UsesFileData(IoOperation.QueryInfo,0) && !EtwRecorder.UsesFileData(IoOperation.MapView,0),"loading a library (paging), opening, listing, querying, mapping");
     Check(EtwRecorder.NeedsPath(IoOperation.Read) && EtwRecorder.NeedsPath(IoOperation.Close) && !EtwRecorder.NeedsPath(IoOperation.MapView) && !EtwRecorder.NeedsPath(IoOperation.UnmapView)
         && !EtwRecorder.NeedsPath(IoOperation.HardFault) && !EtwRecorder.NeedsPath(IoOperation.DiskRead),"memory views, page faults and disk I/O are not unresolved paths");
+    Check(EtwRecorder.CountsUnresolved(IoOperation.Read,CaptureMode.Process,true) && !EtwRecorder.CountsUnresolved(IoOperation.Read,CaptureMode.Process,false)
+        && EtwRecorder.CountsUnresolved(IoOperation.Read,CaptureMode.Folder,false) && EtwRecorder.CountsUnresolved(IoOperation.Read,CaptureMode.Hybrid,false) && !EtwRecorder.CountsUnresolved(IoOperation.MapView,CaptureMode.Process,true),
+        "recording processes only, the unknown paths of other processes do not count");
     return Task.CompletedTask;
 });
 
