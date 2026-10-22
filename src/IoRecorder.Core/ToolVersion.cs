@@ -15,4 +15,10 @@ public static class ToolVersion
         string commit = informational[(plus + 1)..];
         return $"{informational[..plus]} ({commit[..Math.Min(7, commit.Length)]})";
     }
+    // "記録したツール v0.4.0 (f5aaec9)", and the tool showing it when that is another one (a newer tool opening an older record).
+    public static string Recorded(string? recordedWith, string what = "記録")
+    {
+        string text = $"{what}したツール v{recordedWith ?? "不明"}";
+        return recordedWith == Text ? text : $"{text}（表示しているツール v{Text}）";
+    }
 }

@@ -254,7 +254,7 @@ public partial class MainWindow : Window
         _session=Path.GetFullPath(path);_analysis=a;_locations=locations;_replayDataset=_replayConsumed=null;SessionBox.Text=_session;ReplaySessionText.Text=_session;
         ShowLocations();
         // 02 has its own summary; 01 stays the page for recording and is not changed by opening a record.
-        SummaryText.Text=$"{manifest.Label}  ／  {manifest.StartedUtc.ToLocalTime():yyyy/MM/dd HH:mm:ss}  ／  {a.DurationSeconds:N1} 秒";
+        SummaryText.Text=$"{manifest.Label}  ／  {manifest.StartedUtc.ToLocalTime():yyyy/MM/dd HH:mm:ss}  ／  {a.DurationSeconds:N1} 秒  ／  {ToolVersion.Recorded(manifest.Tool)}";
         SummaryQuality.Text=$"{manifest.State} · ETW欠落 {(manifest.EtwLossCountAvailable?manifest.EtwEventsLost.ToString("N0"):"未取得")} · 保存欠落 {manifest.QueueEventsDropped:N0} · 完了未取得 {a.MissingCompletions:N0} · 失敗した操作 {a.FailedOperations:N0}{(a.FastIoRefusals>0?$"（高速I/Oの拒否 {a.FastIoRefusals:N0} 件は、すぐ出し直されたので数えていません）":"")}{(a.OtherProcessEvents>0?$" · 対象のファイルへの他のプロセスのI/O {a.OtherProcessEvents:N0} 件（ページングI/O以外は集計に含めない）":"")} · サイズは非同期観測値";
         if(manifest.State==RecordRecovery.Interrupted) SummaryQuality.Text="途中で終わった記録（ツールかPCが止まった）です。書き出されていた所までを表示しています。  ·  "+SummaryQuality.Text;
         if(manifest.State=="SyntheticDemo") SummaryQuality.Text="DEMO / 合成データです。実測値ではありません。  ·  "+SummaryQuality.Text;

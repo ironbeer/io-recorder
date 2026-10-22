@@ -291,7 +291,7 @@ public static class BenchmarkPlanner
         var createdUtc=DateTimeOffset.UtcNow;
         JsonStore.Write(Path.Combine(output,"session.json"),new SessionManifest
         {
-            Label=config.Label,State="SyntheticBenchmark",StartedUtc=createdUtc,EndedUtc=createdUtc,EventsWritten=events.Count,EtwLossCountAvailable=true,
+            Tool=ToolVersion.Text,Label=config.Label,State="SyntheticBenchmark",StartedUtc=createdUtc,EndedUtc=createdUtc,EventsWritten=events.Count,EtwLossCountAvailable=true,
             Options=new() { Mode=CaptureMode.Folder,Roots=[Root],ProcessNames=[] },
             Warnings=[$"構成ファイルとseed {config.Seed} から作った合成ベンチマークのI/O列です。実測の記録ではありません。",
                       config.RateMiBps>0?$"目標 {config.RateMiBps:N0} MiB/s で一定に投入します（Timelineで実行）。":"各スレッドが前の要求の完了直後に次を発行します（ThinkTimeで実行）。I/O列上の時刻は投入順を決めるための仮の値です。"]
@@ -378,7 +378,8 @@ public static class BenchmarkReport
         var conditions=new List<(string Key,string Value)>
         {
             ("実行日時",summary.StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")),("PC",Environment.MachineName),("試験先",target??"—"),
-            ("経過時間",N(summary.ElapsedSeconds)+" 秒"),("投入方式",summary.Options.Mode==ReplayMode.ThinkTime?"全速（完了後すぐ次を発行）":"一定速度（Timeline）")
+            ("経過時間",N(summary.ElapsedSeconds)+" 秒"),("投入方式",summary.Options.Mode==ReplayMode.ThinkTime?"全速（完了後すぐ次を発行）":"一定速度（Timeline）"),
+            ("実行したツール","v"+(summary.Tool??"不明"))
         };
         if(c is not null)
         {

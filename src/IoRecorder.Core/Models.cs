@@ -89,6 +89,9 @@ public sealed class SessionManifest
     public int SchemaVersion { get; set; } = CurrentSchema;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Label { get; set; } = "";
+    // The IO Recorder that made the record (ToolVersion.Text: version and commit). Set by whoever writes the record, never by
+    // default, so a record read back keeps what it was written with.
+    public string? Tool { get; set; }
     public DateTimeOffset StartedUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? EndedUtc { get; set; }
     public string Machine { get; set; } = Environment.MachineName;
@@ -323,6 +326,8 @@ public sealed class DatasetManifest
     public string SessionId { get; set; } = "";
     public string GenerationId { get; set; } = Guid.NewGuid().ToString("N");
     public int Seed { get; set; } = 42;
+    // The IO Recorder that made the dummy.
+    public string? Tool { get; set; }
     public string State { get; set; } = "Preparing";
     // The recording (or benchmark) the dummy was generated from, and the outcome files of runs since generation or the last
     // reset: together they tell which ranges a reset has to rewrite.
@@ -371,6 +376,8 @@ public sealed class ReplayOutcome
 public sealed class ReplaySummary
 {
     public string SessionId { get; set; } = "";
+    // The IO Recorder that ran the replay (ToolVersion.Text).
+    public string? Tool { get; set; }
     public DateTimeOffset StartedUtc { get; set; } = DateTimeOffset.UtcNow;
     public double ElapsedSeconds { get; set; }
     // Executed: requests sent to the test target, including recorded failures replayed as such.

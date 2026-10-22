@@ -67,6 +67,7 @@ public partial class MainWindow
                 +(c.Locations.Count>0?$"\n場所を絞り込んでいます（両方とも、この中のI/Oだけ）: {LocationFilter.TextOf(c.Locations)}":"")
                 +(c.Link.Options.Locations.Count>0?$"\nこの再生のダミーは、場所を絞り込んで作ったものです: {LocationFilter.TextOf(c.Link.Options.Locations)}":"")
                 +$"\n試験先のダミー: {c.Link.Dataset}　·　再生の記録: {trace}"
+                +$"\n{ReplayComparison.Tools(manifest.Tool,c.Link.Tool)}"
                 +(c.IndexerNote is { } indexer?"\n注意: "+indexer:"");
             CompareValuesGrid.ItemsSource=c.Values.Select(v=>new ValueRow(v.Item,Value(v.Unit,v.Original),Value(v.Unit,v.Replay),Difference(v.Unit,v.Original,v.Replay))).ToArray();
             CompareGraph.SetComparison(c.OriginalTimeline,c.ReplayTimeline);

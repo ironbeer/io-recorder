@@ -39,7 +39,7 @@ public sealed class ReplayEngine
         options.Locations=[.. m.Locations]; var locations=LocationFilter.Of(m.Locations);
         // A path that would leave the dummy or pass through a junction / symbolic link inside it is skipped, not the whole run.
         var unsafePaths=PathPolicy.UnsafeInside(dataset,m.Paths.Values.Concat(m.Directories).Concat(m.InitialSizes.Keys));
-        var result=new ReplaySummary { SessionId=m.SessionId,Options=options };
+        var result=new ReplaySummary { SessionId=m.SessionId,Options=options,Tool=ToolVersion.Text };
         if(settled is { Seconds: >= 1 } s)
             result.Notes.Add($"再生の前に、OSのディスクへの書き出しが落ち着くのを {s.Seconds:N0} 秒待ちました（未書き出し {s.StartBytes/1048576.0:N0} MiB → {s.EndBytes/1048576.0:N0} MiB）。");
         if(TestLocation.IndexWarning(dataset) is { } indexed) result.Notes.Add(indexed);

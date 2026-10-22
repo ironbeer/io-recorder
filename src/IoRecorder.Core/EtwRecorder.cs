@@ -63,7 +63,7 @@ public sealed class EtwRecorder
         if(StopOrphanSessions() is > 0 and var orphans) progress?.Report($"前回途中で止まった計測セッションを {orphans} 件止めました。");
         var tracker=new ProcessTracker(options); var mapper=new DevicePathMapper(); var roots=new RootMatcher(options.ResolvedRoots);
         using(var self=Process.GetCurrentProcess())
-            Manifest=new() { Options=options,Label=label,TotalPhysicalBytes=MemorySampler.Sample(0).TotalBytes,RecorderProcessId=Environment.ProcessId,RecorderStartedUtc=self.StartTime.ToUniversalTime() };
+            Manifest=new() { Tool=ToolVersion.Text,Options=options,Label=label,TotalPhysicalBytes=MemorySampler.Sample(0).TotalBytes,RecorderProcessId=Environment.ProcessId,RecorderStartedUtc=self.StartTime.ToUniversalTime() };
         Manifest.Warnings.Add("ファイルサイズはETW受信後の非同期照会値です。初期サイズの保証はありません。");
         Manifest.Warnings.Add("mmapの全参照、LockFile APIの引数、クラウド通信はETWファイルI/Oから完全には復元できません。");
         foreach(var r in options.ResolvedRoots.Where(r=>r.DevicePath is null && r.UncPath is null && r.UserPath.Length>1 && r.UserPath[1]==':' && !Directory.Exists(r.UserPath)))

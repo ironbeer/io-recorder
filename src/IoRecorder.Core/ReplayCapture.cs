@@ -12,6 +12,8 @@ public sealed class ReplayLink
     // The process that ran the replay: its I/O in the recording is the replayed requests; the rest is the test target's own
     // (the OS, antivirus, the search indexer). Missing in links written before it was recorded.
     public int? ProcessId { get; set; }
+    // The IO Recorder that ran and recorded the replay.
+    public string? Tool { get; set; }
     // Dummy path (as the recording of the replay sees it) → the original recorded path.
     public Dictionary<string,string> Paths { get; set; } = [];
 }
@@ -31,7 +33,7 @@ public static class ReplayCapture
         var original = JsonStore.Read<SessionManifest>(Path.Combine(session, "session.json"));
         var m = JsonStore.Read<DatasetManifest>(Path.Combine(dataset, DatasetBuilder.Marker));
         string trace = AppPaths.NewFolder(Path.Combine(session, Folder), "replay");
-        var link = new ReplayLink { OriginalSession = session, Dataset = dataset, Options = options, ProcessId = Environment.ProcessId };
+        var link = new ReplayLink { OriginalSession = session, Dataset = dataset, Options = options, ProcessId = Environment.ProcessId, Tool = ToolVersion.Text };
         foreach (var (recorded, relative) in m.Paths)
             if (PathPolicy.TryCombineInside(dataset, relative, out var full)) link.Paths[full] = recorded;
         // The replay runs in this process, so this process's I/O is recorded; only the dummy folder is, so the recording's own
@@ -128,6 +130,10 @@ public sealed class ReplayComparison
 
     // locations: both sides narrowed to these folders of the original record (the replay side by the original paths its dummy
     // paths stand for).
+    // The IO Recorder of each side; a replay made by another version than the record is pointed out.
+    public static string Tools(string? recorded, string? replayed) =>
+        $"記録したツール v{recorded ?? "不明"} ／ 再生したツール v{replayed ?? "不明"}" + (recorded is not null && replayed is not null && recorded != replayed ? "（バージョンが違います）" : "");
+
     public static ReplayComparison Build(string session, string trace, ComparisonScope scope = ComparisonScope.All, LocationFilter? locations = null)
     {
         var link = JsonStore.Read<ReplayLink>(Path.Combine(trace, ReplayCapture.LinkFile));

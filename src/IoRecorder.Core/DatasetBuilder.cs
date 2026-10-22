@@ -66,7 +66,7 @@ public static class DatasetBuilder
         var source=JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json"));
         var analysis=SessionAnalyzer.Load(session);
         locations??=new();
-        var m=new DatasetManifest { SessionId=source.Id,Seed=seed,Session=session,Scope=processOnly?"ProcessOnly":rootOnly?"RootOnly":"All",Locations=[.. locations.Folders] };
+        var m=new DatasetManifest { Tool=ToolVersion.Text,SessionId=source.Id,Seed=seed,Session=session,Scope=processOnly?"ProcessOnly":rootOnly?"RootOnly":"All",Locations=[.. locations.Folders] };
         // Paths of the successful operations the replay with this scope will run, and names the record looked up without finding
         // them: the replay looks them up again, so they get a dummy path, but nothing is created there.
         var wanted=new HashSet<string>(StringComparer.OrdinalIgnoreCase);

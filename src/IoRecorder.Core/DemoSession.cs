@@ -11,7 +11,7 @@ public static class DemoSession
         var start=DateTimeOffset.UtcNow;
         var manifest=new SessionManifest
         {
-            Label="DEMO / アニメ制作ワークロード（合成データ）",State="SyntheticDemo",StartedUtc=start,EndedUtc=start.AddSeconds(12),
+            Tool=ToolVersion.Text,Label="DEMO / アニメ制作ワークロード（合成データ）",State="SyntheticDemo",StartedUtc=start,EndedUtc=start.AddSeconds(12),
             Options=new() { Mode=CaptureMode.Hybrid,Roots=[@"D:\Production"],ProcessNames=["AfterFX"] },TotalPhysicalBytes=32UL*1024*1024*1024,
             Warnings=["これは画面確認用の合成データです。実測結果ではありません。"]
         };
@@ -55,7 +55,7 @@ public static class DemoSession
         string trace=AppPaths.NewFolder(Path.Combine(session,ReplayCapture.Folder),"replay");
         Directory.CreateDirectory(trace);
         var original=JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json"));
-        var link=new ReplayLink { OriginalSession=session,Dataset=dataset,StartedUtc=DateTimeOffset.UtcNow,Options=new() { Mode=ReplayMode.ThinkTime },ProcessId=Environment.ProcessId };
+        var link=new ReplayLink { Tool=ToolVersion.Text,OriginalSession=session,Dataset=dataset,StartedUtc=DateTimeOffset.UtcNow,Options=new() { Mode=ReplayMode.ThinkTime },ProcessId=Environment.ProcessId };
         string Dummy(string path)
         {
             if(link.Paths.FirstOrDefault(p=>p.Value.Equals(path,StringComparison.OrdinalIgnoreCase)) is { Key: not null } known) return known.Key;
@@ -70,7 +70,7 @@ public static class DemoSession
         var start=DateTimeOffset.UtcNow;
         JsonStore.Write(Path.Combine(trace,"session.json"),new SessionManifest
         {
-            Label=$"再生の記録: {original.Label}（合成データ）",State="SyntheticDemo",StartedUtc=start,EndedUtc=start+(original.EndedUtc-original.StartedUtc)+TimeSpan.FromSeconds(3),
+            Tool=ToolVersion.Text,Label=$"再生の記録: {original.Label}（合成データ）",State="SyntheticDemo",StartedUtc=start,EndedUtc=start+(original.EndedUtc-original.StartedUtc)+TimeSpan.FromSeconds(3),
             Options=new() { Mode=CaptureMode.Folder,Roots=[dataset] },EventsWritten=events.Count,Warnings=["画面確認用の合成データです。実測結果ではありません。"]
         });
         File.WriteAllLines(Path.Combine(trace,"events.jsonl"),events.Select(e=>JsonSerializer.Serialize(e,JsonStore.Options)));

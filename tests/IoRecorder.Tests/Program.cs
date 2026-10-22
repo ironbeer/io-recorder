@@ -567,6 +567,15 @@ await Test("version, indexed test locations, the indexer note and the write-back
     string profile=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     Check(TestLocation.IndexWarning(Path.Combine(profile,"Desktop","IOReplay")) is not null && TestLocation.IndexWarning(Path.Combine(profile,"AppData","Local","Temp","x")) is null && TestLocation.IndexWarning(@"C:\IOReplay") is null,
         "the user's folders warn, AppData and folders outside the profile do not");
+    // The tool is written into the record, the dummy and the replay, and a record read back keeps what it was written with.
+    string record=DemoSession.Create(Sub("tool-version"));
+    Check(JsonStore.Read<SessionManifest>(Path.Combine(record,"session.json")).Tool==ToolVersion.Text
+        && System.Text.Json.JsonSerializer.Deserialize<SessionManifest>("{\"label\":\"old\"}",JsonStore.Options)!.Tool is null,"the record's tool, none for a record without it");
+    var dummy=await DatasetBuilder.GenerateAsync(record,Sub("tool-version-data"));
+    var replay=await new ReplayEngine().RunAsync(record,Sub("tool-version-data"),new() { Speed=1000 });
+    Check(dummy.Tool==ToolVersion.Text && replay.Tool==ToolVersion.Text,"the dummy's and the replay's tool");
+    Check(File.ReadAllText(Path.Combine(record,"report.html")).Contains("記録したツール v"+ToolVersion.Text) && ToolVersion.Recorded("0.1.0 (abc1234)").Contains("表示しているツール v"+ToolVersion.Text)
+        && ReplayComparison.Tools("0.3.0 (a)","0.4.0 (b)").EndsWith("（バージョンが違います）") && !ReplayComparison.Tools("0.4.0 (b)","0.4.0 (b)").Contains("違います"),"shown in the report, and a different tool is pointed out");
     // Without administrator rights the modified list cannot be read: no waiting.
     var clock=System.Diagnostics.Stopwatch.StartNew(); var settled=await WriteBack.SettleAsync(null,CancellationToken.None,TimeSpan.FromSeconds(3));
     Check(clock.Elapsed<TimeSpan.FromSeconds(5),"the write-back wait ends within its limit");

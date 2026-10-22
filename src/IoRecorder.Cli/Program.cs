@@ -55,7 +55,7 @@ internal static class Cli
                 var recorded=await recorder.RecordAsync(output,options,a.Get("label",subject.Length>0?subject:"I/O capture"),stop.Token,progress,()=>
                 { if(duration>0) stop.CancelAfter(TimeSpan.FromSeconds(duration)); if(a.Optional("ready") is { } path) File.WriteAllText(path,"ready"); });
                 if(OtherProcessIo.Summary(recorder.Manifest,recorded,5) is { } others) Console.WriteLine("記録しなかったプロセスで、同じドライブへのI/Oが多かったもの: "+others);
-                Console.WriteLine("保存先: "+output); return 0;
+                Console.WriteLine($"保存先: {output}（記録したツール v{ToolVersion.Text}）"); return 0;
             }
             case "generate":
             {
@@ -103,6 +103,7 @@ internal static class Cli
                 var scope=a.Get("scope","all").ToLowerInvariant() switch { "all"=>ComparisonScope.All,"replayed"=>ComparisonScope.Replayed,_=>throw new ArgumentException("--scope は all か replayed です。") };
                 var c=ReplayComparison.Build(session,Path.GetFullPath(trace),scope,Locations(a,session));
                 Console.WriteLine($"元の記録: {session}\n再生の記録: {trace}（{c.Link.Options.Mode}、再生 {c.Link.ElapsedSeconds:N1} 秒）");
+                Console.WriteLine(ReplayComparison.Tools(JsonStore.Read<SessionManifest>(Path.Combine(session,"session.json")).Tool,c.Link.Tool));
                 Console.WriteLine(scope==ComparisonScope.Replayed?$"比べる範囲: 再生した要求だけ（再生したプロセス PID {c.ReplayProcessId}）\n":"比べる範囲: 全体（すべてのプロセス）\n");
                 Console.WriteLine($"  {"項目",-22} {"元",14} {"再生",14} {"差",10}");
                 foreach(var v in c.Values) Console.WriteLine($"  {v.Item,-22} {Value(v.Unit,v.Original),14} {Value(v.Unit,v.Replay),14} {Change(v.Original,v.Replay),10}");
