@@ -589,7 +589,7 @@ await Test("analysis: the operation counts keep the OS's paging reads and writes
     return Task.CompletedTask;
 });
 
-await Test("machine: per-second samples and the environment are collected without administrator rights",()=>
+await Test("machine: per-second samples and the environment are collected without administrator rights, and the report shows it at the top",()=>
 {
     var sampler=new SystemSampler();
     sampler.Sample(0,[Environment.ProcessId]); Thread.Sleep(200);
@@ -598,7 +598,17 @@ await Test("machine: per-second samples and the environment are collected withou
     string root=Sub("env-root"); Directory.CreateDirectory(root);
     var options=new RecordingOptions { Mode=CaptureMode.Folder,Roots=[root] }; options.Validate(Sub("env-out"));
     var info=EnvironmentInfo.Collect(options,Sub("env-out"));
-    Check(!string.IsNullOrEmpty(info.CpuModel) && info.Volumes.Count==2 && info.Volumes.All(v=>v.FileSystem is { Length: > 0 } && v.FreeBytes>0),"CPU model and the drives of the target and of the record");
+    Check(!string.IsNullOrEmpty(info.CpuModel) && info.Volumes.Count(v=>v.Role!="ドライブ")==2 && info.Volumes.All(v=>v.FileSystem is { Length: > 0 } && v.FreeBytes>0),"CPU model and the drives of the target and of the record");
+    // The rest of the machine from WMI and the registry (some parts need administrator rights and are noted as problems).
+    Check(info.Computer?.Manufacturer is { Length: > 0 } && info.Cpu?.LogicalProcessors>0 && info.Disks.Count>0 && info.Power is not null && info.BootTimeUtc<DateTimeOffset.UtcNow,"PC, CPU, disks, power and boot time");
+    Check(info.Volumes.Where(v=>v.Role!="ドライブ").All(v=>v.ClusterBytes>0 && v.DiskNumbers.Count>0 && v.DiskNumbers.All(n=>info.Disks.Any(d=>d.Number==n))),"cluster size and the disks behind the drives");
+    // At the top of the HTML report, from environment.json; the filter count takes only the filters' lines.
+    info.FilterDrivers=["Filter Name   Num Instances   Altitude   Frame","------------  -------------  --------  -----","WdFilter   11   328010   0","bindflt   1   409800   0","エラー: 0x80070005"];
+    string record=DemoSession.Create(Sub("env-report"));
+    Check(!File.ReadAllText(Path.Combine(record,"report.html")).Contains("計測したPCと環境"),"a record without environment.json has no environment part");
+    JsonStore.Write(Path.Combine(record,"environment.json"),info); SessionAnalyzer.Export(record);
+    string html=File.ReadAllText(Path.Combine(record,"report.html"));
+    Check(html.Contains("計測したPCと環境") && html.Contains(System.Net.WebUtility.HtmlEncode(info.Computer!.Manufacturer!)) && html.Contains("フィルタードライバー 2 件（WdFilter、bindflt）") && html.Contains("詳しく見る"),"the environment part with the PC, the storage and the filters");
     var (files,_)=OpenFiles.Take(_=>false,TimeSpan.FromSeconds(5));
     Check(files.Count==0,"the open-file lookup runs without failing");
     return Task.CompletedTask;

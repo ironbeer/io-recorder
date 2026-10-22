@@ -243,6 +243,11 @@ public sealed class VolumeInfo
     public long? TotalBytes { get; set; }
     public long? FreeBytes { get; set; }
     public string? UncPath { get; set; }
+    // The allocation unit of the file system (the smallest piece a file takes), BitLocker (オン / オフ / 不明, read as
+    // administrator) and the disks the drive is on (DiskInfo.Number).
+    public long? ClusterBytes { get; set; }
+    public string? BitLocker { get; set; }
+    public List<int> DiskNumbers { get; set; } = [];
     public string? Error { get; set; }
 }
 public sealed class AdapterInfo
@@ -272,6 +277,30 @@ public sealed class EnvironmentInfo
     public List<VolumeInfo> Volumes { get; set; } = [];
     public List<AdapterInfo> NetworkAdapters { get; set; } = [];
     public List<string> FilterDrivers { get; set; } = [];
+    // The rest of the machine (MachineDetails).
+    public ComputerInfo? Computer { get; set; }
+    public CpuInfo? Cpu { get; set; }
+    public List<MemoryModule> MemoryModules { get; set; } = [];
+    public List<GpuInfo> Gpus { get; set; } = [];
+    public PowerInfo? Power { get; set; }
+    public DateTimeOffset? BootTimeUtc { get; set; }
+    public List<PageFileInfo> PageFiles { get; set; } = [];
+    public List<DiskInfo> Disks { get; set; } = [];
+    public List<ControllerInfo> StorageControllers { get; set; } = [];
+    public List<StorageSpaceInfo> StorageSpaces { get; set; } = [];
+    public string? NtfsLastAccessUpdate { get; set; }
+    public string? NtfsShortNames { get; set; }
+    public List<SmbConnectionInfo> SmbConnections { get; set; } = [];
+    public List<SmbChannelInfo> SmbChannels { get; set; } = [];
+    public Dictionary<string, string> SmbClient { get; set; } = [];
+    // Drive letter → share, from the user's mapped network drives.
+    public Dictionary<string, string> MappedDrives { get; set; } = [];
+    public bool? OfflineFilesEnabled { get; set; }
+    public bool? OfflineFilesActive { get; set; }
+    public List<AntivirusInfo> Antivirus { get; set; } = [];
+    public DefenderInfo? Defender { get; set; }
+    // Windows Search (WSearch) and the prefetcher (SysMain).
+    public List<ServiceInfo> Services { get; set; } = [];
     public List<string> Problems { get; set; } = [];
 
     public static EnvironmentInfo Collect(RecordingOptions options, string output)
@@ -289,6 +318,13 @@ public sealed class EnvironmentInfo
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { info.Problems.Add("レジストリ: " + ex.Message); }
         foreach (var root in options.ResolvedRoots) info.Volumes.Add(Volume("対象フォルダ", root.UserPath, root.UncPath));
         info.Volumes.Add(Volume("記録の保存先", output, null));
+        // Every other drive too: a recording of an application finds out which drives it used only afterwards.
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType is DriveType.Fixed or DriveType.Removable or DriveType.Network))
+                if (!info.Volumes.Any(v => string.Equals(v.Root, drive.Name, StringComparison.OrdinalIgnoreCase))) info.Volumes.Add(Volume("ドライブ", drive.Name, null));
+        }
+        catch (IOException ex) { info.Problems.Add("ドライブ: " + ex.Message); }
         try
         {
             foreach (var nic in IoRecorder.Core.NetworkAdapters.List())
@@ -296,6 +332,8 @@ public sealed class EnvironmentInfo
         }
         catch (NetworkInformationException ex) { info.Problems.Add("ネットワーク: " + ex.Message); }
         info.FilterDrivers = FilterDriverList(info.Problems);
+        MachineDetails.Collect(info);
+        MachineDetails.Volumes(info);
         return info;
     }
     private static VolumeInfo Volume(string role, string path, string? unc)
@@ -327,7 +365,10 @@ public sealed class EnvironmentInfo
     {
         try
         {
-            using var p = Process.Start(new ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "fltmc.exe"), "filters") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true });
+            // It writes in the console's code page (Shift_JIS on Japanese Windows), not UTF-8.
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            var encoding = System.Text.Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+            using var p = Process.Start(new ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "fltmc.exe"), "filters") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true, StandardOutputEncoding = encoding, StandardErrorEncoding = encoding });
             if (p is null) return [];
             var text = p.StandardOutput.ReadToEndAsync();
             if (!p.WaitForExit(5000)) { p.Kill(); problems.Add("fltmc が応答しませんでした。"); return []; }
