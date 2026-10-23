@@ -51,9 +51,13 @@ internal static class Cli
                 // Without --out: Documents\IORecorder\Recordings\yyyyMMdd-HHmmss_<label or what is measured>.
                 string subject=a.Optional("label") ?? string.Join("・",options.ProcessNames.Concat(options.Launch is { } started?new[] { started.ProcessName }:Array.Empty<string>()).Select(Path.GetFileNameWithoutExtension).Distinct(StringComparer.OrdinalIgnoreCase).Concat(options.ProcessIds.Select(p=>"PID"+p)).DefaultIfEmpty(string.Join("・",roots.Select(r=>Path.GetFileName(r.TrimEnd('\\'))))));
                 string output=Path.GetFullPath(a.Optional("out") ?? AppPaths.NewFolder(AppPaths.Recordings,subject));
-                var recorder=new EtwRecorder();
+                var recorder=new EtwRecorder { StopHint="" };
                 var recorded=await recorder.RecordAsync(output,options,a.Get("label",subject.Length>0?subject:"I/O capture"),stop.Token,progress,()=>
-                { if(duration>0) stop.CancelAfter(TimeSpan.FromSeconds(duration)); if(a.Optional("ready") is { } path) File.WriteAllText(path,"ready"); });
+                {
+                    if(duration>0) stop.CancelAfter(TimeSpan.FromSeconds(duration));
+                    Console.WriteLine(duration>0?$"{duration} 秒たったら止めて保存します（Ctrl+C で先に止められます）。":"Ctrl+C で止めて保存します。");
+                    if(a.Optional("ready") is { } path) File.WriteAllText(path,"ready");
+                });
                 if(OtherProcessIo.Summary(recorder.Manifest,recorded,5) is { } others) Console.WriteLine("記録しなかったプロセスで、同じドライブへのI/Oが多かったもの: "+others);
                 Console.WriteLine($"保存先: {output}（記録したツール v{ToolVersion.Text}）"); return 0;
             }

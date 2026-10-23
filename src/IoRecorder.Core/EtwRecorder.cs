@@ -14,6 +14,9 @@ public sealed class EtwRecorder
 {
     public LiveMetrics Metrics { get; }=new();
     public SessionManifest Manifest { get; private set; }=new();
+    // How the user stops the recording, said once the application is started: the window's button by default; the command
+    // line, which has no such button, says its own.
+    public string StopHint { get; init; }="作業が終わったら「停止して保存」を押してください。";
     public MemorySample? LatestMemory { get; private set; }
     public long EventsWritten => Interlocked.Read(ref _written);
     public long QueueEventsDropped => Interlocked.Read(ref _dropped);
@@ -415,7 +418,7 @@ public sealed class EtwRecorder
             progress?.Report("ETW計測を開始しました。対象アプリで操作してください。"); ready?.Invoke();
             // The application starts only now, so its start-up is recorded; its events wait in the session buffers meanwhile.
             if(options.Launch is { } app)
-                try { Manifest.LaunchedProcessId=AppLauncher.Start(app); progress?.Report($"{app.Name} を起動しました（PID {Manifest.LaunchedProcessId}）。作業が終わったら「停止して保存」を押してください。"); }
+                try { Manifest.LaunchedProcessId=AppLauncher.Start(app); progress?.Report($"{app.Name} を起動しました（PID {Manifest.LaunchedProcessId}）。{StopHint}".TrimEnd()); }
                 catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or UnauthorizedAccessException)
                 { Warn($"{app.Name} を起動できませんでした（{ex.Message}）。記録は続いています。いつもの方法で {app.Name} を起動してください。"); }
             var processing=Task.Run(()=>session.Source.Process());
