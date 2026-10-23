@@ -420,7 +420,7 @@ public partial class MainWindow : Window
             ReplayResultText.Text=$"{(result.Cancelled?"中止":"再生完了")}  /  {result.ElapsedSeconds:N1} 秒\n実行 {result.Executed:N0} / 失敗 {result.Failed:N0} / スキップ {result.Skipped:N0}"
                 +(result.ReproducedFailures+result.FailuresNotReproduced>0?$"\n記録で失敗した要求の出し直し: 同じく失敗 {result.ReproducedFailures:N0} / 失敗しなかった {result.FailuresNotReproduced:N0}（実行に含む）":"")
                 +(result.TemporaryOpens>0?$"\n一時的に開いた回数 {result.TemporaryOpens:N0}（開いた記録がないファイルへの要求のため）":"")
-                +$"\nRead {result.ReadBytes/1048576.0:N1} MiB\nWrite {result.WriteBytes/1048576.0:N1} MiB\nP95 {result.P95Ms:N2} ms / P99 {result.P99Ms:N2} ms\n投入の遅れ（{(options.Mode==ReplayMode.ThinkTime?"記録の間隔":"記録の時刻")}との差） 中央値 {result.PacingErrorP50Ms:N3} ms / P95 {result.PacingErrorP95Ms:N3} ms / 最大 {result.MaxSchedulingLagMs:N1} ms\n\n詳細は記録フォルダの replay-*.json / JSONL に保存しました。"+(_lastTrace is null?"":$"\n再生の記録: {result.TraceFolder}")
+                +$"\nRead {result.ReadBytes/1048576.0:N1} MiB\nWrite {result.WriteBytes/1048576.0:N1} MiB\nP95 {result.P95Ms:N2} ms / P99 {result.P99Ms:N2} ms\n投入の遅れ（{options.Mode switch { ReplayMode.ThinkTime=>"記録の間隔",ReplayMode.Fastest=>"前の要求の完了",_=>"記録の時刻" }}との差） 中央値 {result.PacingErrorP50Ms:N3} ms / P95 {result.PacingErrorP95Ms:N3} ms / 最大 {result.MaxSchedulingLagMs:N1} ms\n\n詳細は記録フォルダの replay-*.json / JSONL に保存しました。"+(_lastTrace is null?"":$"\n再生の記録: {result.TraceFolder}")
                 +string.Concat(result.Notes.Where(n=>n.StartsWith("再生の前に",StringComparison.Ordinal)||n.StartsWith("試験先がユーザー",StringComparison.Ordinal)).Select(n=>"\n\n注意: "+n));
             StatusBadge.Text=result.Failed>0?"●  CHECK RESULTS":"●  COMPLETE";
         }

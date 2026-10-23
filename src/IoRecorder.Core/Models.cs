@@ -8,7 +8,7 @@ public enum CaptureMode { Process, Folder, Hybrid }
 // MapView / UnmapView: a view of a file mapped into or out of a process's memory (no I/O by itself; the reads and writes of
 // mapped pages appear as paging I/O and hard faults).
 public enum IoOperation { Open, Read, Write, Cleanup, Close, Flush, SetEndOfFile, SetAllocation, Delete, Rename, QueryInfo, DirectoryEnumerate, SetInfo, FsControl, HardFault, DiskRead, DiskWrite, DirectoryNotify, MapView, UnmapView }
-public enum ReplayMode { Timeline, ThinkTime }
+public enum ReplayMode { Timeline, ThinkTime, Fastest }
 public enum PagingReplay { UnmatchedReads, None, All }
 
 public sealed class RecordingOptions
@@ -357,7 +357,10 @@ public sealed class DatasetManifest
 public sealed class ReplayOptions
 {
     // ThinkTime by default: like the application, each thread waits for its request and then for the recorded gap, so a
-    // slower or faster test target makes the whole run longer or shorter. Timeline keeps the recorded times instead.
+    // slower or faster test target makes the whole run longer or shorter. Timeline keeps the recorded times instead. Fastest
+    // leaves the gaps out: a thread's next request goes as soon as its previous one (and what it waits for) is done. A recorded
+    // gap may hold waiting for the recorded storage as well as the application's own work (a thread idle while every parallel
+    // request waited for a NAS), so ThinkTime understates how much faster a faster target is, and Fastest overstates it.
     public ReplayMode Mode { get; set; } = ReplayMode.ThinkTime;
     public double Speed { get; set; } = 1;
     public int Workers { get; set; } = 8;

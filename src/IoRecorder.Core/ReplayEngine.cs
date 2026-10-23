@@ -12,6 +12,10 @@ public sealed class ReplayEngine
 {
     // The "previous request" of a thread that has none yet: finished at the start of the replay clock.
     private static readonly Task<double> NotStarted=Task.FromResult(0.0);
+    // FileRemoteProtocolInformation (class 55): which network protocol a file on a share is reached by. Windows asks it by itself
+    // in the application's thread when a file on a share is opened or first read; on a share the test machine's Windows asks
+    // its own, and on a local disk the question does not apply (it fails: seen 1,668 times when a NAS record was replayed on C:).
+    private static bool RemoteProtocolQuery(IoEvent e)=>e.Operation==IoOperation.QueryInfo && e.InfoClass==55;
     private const int LookAhead=1024;
     private static string[] Names(IoEvent e)=>string.IsNullOrEmpty(e.Path)?[]:e.Operation==IoOperation.Rename && !string.IsNullOrEmpty(e.DestinationPath)?[e.Path,e.DestinationPath]:[e.Path];
     // Creating, replacing, renaming or deleting a name (what another thread's later open of that name depends on).
@@ -54,13 +58,13 @@ public sealed class ReplayEngine
         result.Notes.Add("属性の問い合わせとフォルダの一覧は、記録と同じ情報クラスで、元が使ったハンドルに対して1回ずつ出します。高速I/Oの拒否（すぐ同じ要求が出し直されたもの）は、出し直された方だけを再生します（SkippedFastIoRetry）。");
         result.Notes.Add("開くときのアクセス権は記録に無いため、そのハンドルで記録された操作から推定します: 書き込みがあれば読み書き、読み取りがあれば読み取り、どちらも無ければ属性だけ（ウイルス対策の開くときの検査の対象になりにくい開き方）。");
         var accessPlan=new Dictionary<string,FileAccess>();
-        var paging=new PagingClassifier();
+        var paging=new PagingClassifier(); var parentChecks=new ParentFolderChecks();
         long total=0;
         work?.Report(new("記録を読み込み中",0,0,"アクセス権とページングI/Oの判定を準備しています"));
         foreach(var e in RecordLog.Read<IoEvent>(session, RecordLog.Events))
         {
             if(token.IsCancellationRequested) break;
-            paging.Observe(e);
+            paging.Observe(e); parentChecks.Observe(e);
             if(!locations.Includes(e.Path)) continue;
             if(e.IsFileIo && !(options.ProcessOnly&&!e.MatchesProcess) && !(options.RootOnly&&!e.MatchesRoot)) total++;
             if(e.ByOtherProcess || e.ByMachine) continue;
@@ -98,7 +102,7 @@ public sealed class ReplayEngine
         // and file, not every other thread behind it.
         int lookAhead=Math.Max(LookAhead,options.Workers*4);
         using var slots=new SemaphoreSlim(lookAhead);
-        var active=new HashSet<Task>(); var gate=new object(); long machine=0;
+        var active=new HashSet<Task>(); var gate=new object(); long machine=0,parents=0,remote=0;
         // Recorded before the first request, so a reset also knows about runs that were cancelled or crashed.
         m.State="Replaying"; m.Runs.Add(outcomePath); JsonStore.Write(marker,m);
         void Record(IoEvent captured,ReplayOutcome outcome)
@@ -158,9 +162,9 @@ public sealed class ReplayEngine
                 // Another process's I/O on the target's files is the recorded machine's own (its cache, antivirus): kept for
                 // analysis, not replayed; the test target's OS does its own.
                 // The OS writing a file out keeps its paging reason; the machine's other requests (size changes, closes, scans) get theirs.
-                if((e.ByOtherProcess?"SkippedOtherProcess":(paging.FlagsAvailable?paging.SkipReason(e,options.Paging):null) ?? (e.ByMachine?"SkippedMachineProcess":null)) is { } skip)
+                if((e.ByOtherProcess?"SkippedOtherProcess":parentChecks.Contains(e)?"SkippedParentCheck":RemoteProtocolQuery(e)?"SkippedRemoteProtocolQuery":(paging.FlagsAvailable?paging.SkipReason(e,options.Paging):null) ?? (e.ByMachine?"SkippedMachineProcess":null)) is { } skip)
                 {
-                    if(skip=="SkippedMachineProcess") machine++;
+                    if(skip=="SkippedMachineProcess") machine++; else if(skip=="SkippedParentCheck") parents++; else if(skip=="SkippedRemoteProtocolQuery") remote++;
                     Record(e,new ReplayOutcome { Sequence=e.Sequence,Operation=e.Operation,Path=e.Path,PlannedUs=plannedUs,ActualUs=(long)(clock.Elapsed.TotalMilliseconds*1000),Status=skip }); continue;
                 }
                 await slots.WaitAsync(token);
@@ -185,6 +189,7 @@ public sealed class ReplayEngine
                         // ThinkTime: the recorded gap after this thread's previous request, counted from the moment that request
                         // really returned, so the replay's own bookkeeping falls inside the gap instead of adding to it.
                         if(options.Mode==ReplayMode.ThinkTime) outcome.PlannedUs=(long)(previous+think/options.Speed);
+                        else if(options.Mode==ReplayMode.Fastest) outcome.PlannedUs=(long)previous;
                         await timer.WaitUntil(outcome.PlannedUs);
                         await workers.WaitAsync(token); acquired=true;
                         outcome.ActualUs=(long)clock.Elapsed.TotalMicroseconds;
@@ -218,6 +223,10 @@ public sealed class ReplayEngine
                 result.Notes.Add($"記録で失敗した要求のうち、ダミーでも同じ形で届くもの（無い名前の確認、フォルダをファイルとして開く、末尾より先の読み取り、一覧の終わり、属性の問い合わせ）を再生しました: 同じく失敗 {result.ReproducedFailures:N0} / 失敗しなかった {result.FailuresNotReproduced:N0}。");
             if(result.TemporaryOpens>0)
                 result.Notes.Add($"開いた記録がないファイルへの要求 {result.TemporaryOpens:N0} 件は、その要求のためだけに開いて閉じました（元の記録より Open/Close が多くなります）。");
+            if(remote>0)
+                result.Notes.Add($"ネットワークの種類の問い合わせ {remote:N0} 件（情報クラス55。共有のファイルを開いたり読んだりするとWindowsが自分で出すもの）は再生しませんでした（SkippedRemoteProtocolQuery）。共有に再生するなら再生先のPCのWindowsが自分で出し、ローカルのディスクでは意味のない問い合わせです。");
+            if(parents>0)
+                result.Notes.Add($"ファイルを作る直前にWindowsが親フォルダを確かめた要求 {parents:N0} 件（末尾に\\の付いたフォルダの名前で開いて問い合わせ、閉じた直後に同じスレッドがそのフォルダにファイルを作ったもの）は再生しませんでした（SkippedParentCheck）。再生先のPCのWindowsも、ファイルを作るときに自分で確かめます。");
             if(machine>0)
                 result.Notes.Add($"記録したPCのOS（System）・Microsoft Defender・検索インデックスのI/O {machine:N0} 件は再生しませんでした（SkippedMachineProcess）。再生先のPCでは、そのPCのOSとウイルス対策が、再生した読み書きに応じて自分で出します。");
             result.PacingErrorP50Ms=pacing.Percentile(.5); result.PacingErrorP95Ms=pacing.Percentile(.95);

@@ -1016,6 +1016,44 @@ await Test("recording on a share: no rename destination from a key reused after 
     Check(r.Failed==0 && statuses[2]=="Executed" && new[] { 3L,4,5 }.All(n=>statuses[n]=="SkippedMachineProcess") && r.Notes.Any(n=>n.Contains("SkippedMachineProcess")),
         $"the application replayed, the machine's own I/O not ({string.Join(", ",statuses.Select(p=>$"{p.Key}:{p.Value}"))})");
 });
+await Test("replay: Windows' check of the folder a new file goes into is not sent again; the application's own use of a folder is",async()=>
+{
+    const string renders=@"C:\w\renders\",other=@"C:\w\other\";
+    IoEvent Folder(IoEvent e) { e.IsDirectory=true; return e; }
+    IoEvent Query(long seq,string path,string handle,long start,int cls) { var e=Op(seq,IoOperation.QueryInfo,path,handle,start); e.InfoClass=cls; return e; }
+    IoEvent Create(long seq,string path,string handle,long start) => Open(seq,path,handle,start,disposition:2,info:2);
+    var events=new IoEvent[] {
+        // Windows' check before a creation: the folder opened with a trailing backslash, one query, closed, the file created 9 µs later.
+        Folder(Open(1,renders,"P1",100)),Query(2,renders,"P1",120,55),Op(3,IoOperation.Cleanup,renders,"P1",130),Op(4,IoOperation.Close,renders,"P1",135),
+        Create(5,renders+"new_1.bin","N1",154),Op(6,IoOperation.Write,renders+"new_1.bin","N1",200,4096),Op(7,IoOperation.Cleanup,renders+"new_1.bin","N1",300),Op(8,IoOperation.Close,renders+"new_1.bin","N1",310),
+        // The application listing a folder, and a folder check followed by a creation somewhere else: both are sent.
+        Folder(Open(9,renders,"P2",1_000)),Op(10,IoOperation.DirectoryEnumerate,renders,"P2",1_010),Op(11,IoOperation.Cleanup,renders,"P2",1_020),Op(12,IoOperation.Close,renders,"P2",1_030),
+        Folder(Open(13,renders,"P3",2_000)),Query(14,renders,"P3",2_010,4),Op(15,IoOperation.Cleanup,renders,"P3",2_020),Op(16,IoOperation.Close,renders,"P3",2_030),
+        Create(17,other+"new_2.bin","N2",2_045),Op(18,IoOperation.Cleanup,other+"new_2.bin","N2",2_100),Op(19,IoOperation.Close,other+"new_2.bin","N2",2_110) };
+    string s=Session("parent-checks",events);
+    string d=Sub("parent-checks-data"); await DatasetBuilder.GenerateAsync(s,d);
+    var r=await new ReplayEngine().RunAsync(s,d,new() { Speed=1000 });
+    var statuses=JsonStore.Lines<ReplayOutcome>(Path.Combine(s,r.OutcomeFile!)).ToDictionary(o=>o.Sequence,o=>o.Status);
+    Check(r.Failed==0 && new[] { 1L,2,3,4 }.All(n=>statuses[n]=="SkippedParentCheck") && new[] { 5L,6,9,13,17 }.All(n=>statuses[n]=="Executed") && r.Notes.Any(n=>n.Contains("SkippedParentCheck")),
+        $"only the check before the creation in that folder is left out ({string.Join(", ",statuses.OrderBy(p=>p.Key).Select(p=>$"{p.Key}:{p.Value}"))})");
+});
+await Test("replay: Fastest leaves the recorded gaps out; the network protocol query Windows makes on shares is not sent",async()=>
+{
+    const string file=@"C:\w\frame.bin";
+    var query=Op(3,IoOperation.QueryInfo,file,"A",150); query.InfoClass=55;
+    // A second between the two reads: the application's work, or a thread waiting for a slow storage; the record cannot tell.
+    var events=new[] { Open(1,file,"A",100),Op(2,IoOperation.Read,file,"A",120,4096),query,Op(4,IoOperation.Read,file,"A",1_000_000,4096,4096),Op(5,IoOperation.Cleanup,file,"A",1_000_100) };
+    string s=Session("fastest",events,[new SizeObservation { Path=file,ObservedUs=1,Size=8192 }]);
+    async Task<ReplaySummary> Run(ReplayMode mode,string name)
+    {
+        string d=Sub(name); await DatasetBuilder.GenerateAsync(s,d);
+        return await new ReplayEngine().RunAsync(s,d,new() { Mode=mode });
+    }
+    var think=await Run(ReplayMode.ThinkTime,"fastest-think"); var fastest=await Run(ReplayMode.Fastest,"fastest-data");
+    var statuses=JsonStore.Lines<ReplayOutcome>(Path.Combine(s,fastest.OutcomeFile!)).ToDictionary(o=>o.Sequence,o=>o.Status);
+    Check(think.ElapsedSeconds>0.9 && fastest.ElapsedSeconds<0.5 && fastest.Failed==0 && fastest.ReadBytes==8192,$"the gap kept and left out ({think.ElapsedSeconds:N2} s / {fastest.ElapsedSeconds:N2} s)");
+    Check(statuses[3]=="SkippedRemoteProtocolQuery" && fastest.Notes.Any(n=>n.Contains("SkippedRemoteProtocolQuery")),"the class-55 query is left out");
+});
 await Test("network drives: a mapped drive is its share, also where the letter is not there; unknown drives and unreachable shares stop with a reason",async()=>
 {
     // The device of a mapped drive and the paths of its files, as Windows and ETW write them.

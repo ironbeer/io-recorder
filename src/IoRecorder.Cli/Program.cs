@@ -306,9 +306,10 @@ generate   --session <記録フォルダ> --target L:\Bench\20261017-153012_Afte
            [--process-only] [--root-only]  (replay と同じ範囲を指定。その範囲が使うファイルだけ作る)
            [--location Z:\Project ...] [--all-locations]  (この場所の中のI/Oだけでダミーを作る。replay はダミーの場所だけを再生する)
 replay     --session <記録フォルダ> --target L:\Bench\20261017-153012_AfterFX
-           [--timing ThinkTime|Timeline] [--speed 1] [--workers 8]
-             ThinkTime（既定）: 完了を待ち、記録と同じ間隔で次を出す（作業時間の比較向け）
+           [--timing ThinkTime|Timeline|Fastest] [--speed 1] [--workers 8]
+             ThinkTime（既定）: 完了を待ち、記録と同じ間隔で次を出す（作業時間の比較向け。速くなる量は少なめに出る）
              Timeline: 記録の時刻どおりに出す（同じ負荷での遅延比較向け）
+             Fastest: 間隔を空けず、前が終わったらすぐ次を出す（速くなる量は多めに出る）
            [--process-only] [--root-only]
            [--paging UnmatchedReads|None|All] [--trim-leading-idle] [--record]
              --record: 再生中の試験先のI/OもETWで記録する（管理者権限）。compare で元の記録と比べる
