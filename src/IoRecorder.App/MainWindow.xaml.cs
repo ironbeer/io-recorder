@@ -223,9 +223,25 @@ public partial class MainWindow : Window
     private void StopWork(object sender,RoutedEventArgs e) { _stop?.Cancel();LogText.Text="停止して記録を確定しています…"; }
     private void ReportError(Exception ex) { LogText.Text=ex.Message; MessageBox.Show(this,ex.Message,"IO Recorder",MessageBoxButton.OK,MessageBoxImage.Error); }
 
-    private string? PickFolder(string title)
-    { var d=new OpenFolderDialog { Title=title,Multiselect=false };return d.ShowDialog(this)==true?d.FolderName:null; }
-    private void BrowseRoot(object sender,RoutedEventArgs e) { if(PickFolder("計測対象フォルダ") is { } p) RootsBox.Text=string.IsNullOrWhiteSpace(RootsBox.Text)?p:RootsBox.Text+Environment.NewLine+p; }
+    // The user's network drives are not drives of this elevated process: their shares are offered on the left of the dialog,
+    // under the tool's name and with the shares' names, so the title says which letter each one is.
+    private static List<NetworkDrive> AddNetworkPlaces(CommonItemDialog d)
+    {
+        var drives=NetworkDrives.List();
+        var elsewhere=drives.Where(x=>x.Source!=NetworkDrives.Here).ToList();
+        foreach(var drive in elsewhere) d.CustomPlaces.Add(new FileDialogCustomPlace(drive.Share));
+        if(elsewhere.Count>0) d.Title+="　— ネットワークドライブは左の「IORecorder」の下（"+string.Join("、",elsewhere.Select(x=>$"{x.Drive} = {Path.GetFileName(x.Share)}"))+"）";
+        return drives;
+    }
+    // With letters, a folder picked on a share is written with the drive letter the user knows (Z:\…); the tool reads it
+    // through the share when it uses it.
+    private string? PickFolder(string title,bool letters=false)
+    {
+        var d=new OpenFolderDialog { Title=title,Multiselect=false };
+        var drives=AddNetworkPlaces(d);
+        return d.ShowDialog(this)!=true?null:letters?NetworkDrives.ToDrive(d.FolderName,drives):d.FolderName;
+    }
+    private void BrowseRoot(object sender,RoutedEventArgs e) { if(PickFolder("計測対象フォルダ",letters:true) is { } p) RootsBox.Text=string.IsNullOrWhiteSpace(RootsBox.Text)?p:RootsBox.Text+Environment.NewLine+p; }
     private async void ReplayReset(object sender,RoutedEventArgs e)
     {
         if(_stop is not null || _replayConsumed is null) return;
@@ -241,7 +257,7 @@ public partial class MainWindow : Window
         catch(Exception ex) { ReportError(ex);StatusBadge.Text="●  ERROR"; }
         finally { FinishWork(); }
     }
-    private void BrowseTarget(object sender,RoutedEventArgs e) { if(PickFolder("試験先フォルダ（NAS・LucidLinkなど）") is { } p) TargetBox.Text=p; }
+    private void BrowseTarget(object sender,RoutedEventArgs e) { if(PickFolder("試験先フォルダ（NAS・LucidLinkなど）",letters:true) is { } p) TargetBox.Text=p; }
     private async void OpenSession(object sender,RoutedEventArgs e)
     { if(PickFolder("session.jsonを含む記録フォルダ") is { } p) { try { await LoadSessionAsync(p); } catch(Exception ex) { ReportError(ex); } } }
     private async Task LoadSessionAsync(string path)
@@ -360,14 +376,16 @@ public partial class MainWindow : Window
         try
         {
             if(_session is null) throw new InvalidOperationException("先に記録を開いてください。");
-            string root=PathPolicy.NormalizeRoot(TargetBox.Text.Trim());
+            string given=PathPolicy.NormalizeRoot(TargetBox.Text.Trim()),session=_session;
             int seed=Seeds.Value(Seeds.Normalize(SeedBox.Text)??"42");
-            // Test target\yyyyMMdd-HHmmss_replay_<recording folder>, created fresh for every generation.
-            string target=AppPaths.NewFolder(root,"replay_"+Path.GetFileName(_session)),session=_session;
             // Only the files the replay with this scope touches are generated; the replay must use the same scope.
             int scope=ReplayScope.SelectedIndex; var locations=_locations;
             _replayDataset=null; _stop=new();SetBusy(true);StatusBadge.Text="●  GENERATING";
             var token=_stop.Token;
+            // A network drive is used through its share; a share that does not answer stops here, before anything is written.
+            string root=await Task.Run(()=>TestLocation.Reach(given),token);
+            // Test target\yyyyMMdd-HHmmss_replay_<recording folder>, created fresh for every generation.
+            string target=AppPaths.NewFolder(root,"replay_"+Path.GetFileName(session));
             var m=await Task.Run(()=>DatasetBuilder.GenerateAsync(session,target,seed,_progress,token,processOnly:scope==1,rootOnly:scope==2,locations:locations));
             _replayDataset=target; _replayScope=scope; _replayLocations=locations.Key; SaveSettings();
             ReplayResultText.Text=$"生成完了\n{m.InitialSizes.Count:N0} ファイル / {m.InitialSizes.Values.Sum()/1048576.0:N1} MiB（{((ComboBoxItem)ReplayScope.SelectedItem).Content}）"

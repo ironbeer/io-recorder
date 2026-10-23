@@ -64,23 +64,25 @@ internal static class Cli
                 string seedText=a.Optional("seed") is { } given?Seeds.Normalize(given) ?? throw new ArgumentException("--seed には文字か数字を含めてください。")
                     :File.Exists(planFile)?JsonStore.Read<BenchmarkPlan>(planFile).Config.Seed:"42";
                 int seed=Seeds.Value(seedText);
-                if(TestLocation.IndexWarning(a.Required("target")) is { } indexed) Console.WriteLine("注意: "+indexed);
-                if(File.Exists(planFile)) BenchmarkPlanner.CheckSpace(JsonStore.Read<BenchmarkPlan>(planFile),a.Required("target"),includeDummy:true);
+                // A network drive is used through its share (Z:\IOTest → \\server\share\IOTest).
+                string target=TestLocation.Reach(a.Required("target"));
+                if(TestLocation.IndexWarning(target) is { } indexed) Console.WriteLine("注意: "+indexed);
+                if(File.Exists(planFile)) BenchmarkPlanner.CheckSpace(JsonStore.Read<BenchmarkPlan>(planFile),target,includeDummy:true);
                 // The same --process-only / --root-only as the replay: only the files that replay touches are made.
-                var m=await DatasetBuilder.GenerateAsync(session,a.Required("target"),seed,progress,stop.Token,processOnly:a.Flag("process-only"),rootOnly:a.Flag("root-only"),locations:Locations(a,session));
+                var m=await DatasetBuilder.GenerateAsync(session,target,seed,progress,stop.Token,processOnly:a.Flag("process-only"),rootOnly:a.Flag("root-only"),locations:Locations(a,session));
                 if(m.ExcludedPaths>0) Console.WriteLine($"対象外 {m.ExcludedPaths:N0} パス（変換・作成できない名前。再生ではスキップします）。例と理由は {DatasetBuilder.Marker} の notes にあります。");
                 return 0;
             }
             case "reset":
             {
-                var s=await DatasetBuilder.ResetAsync(a.Required("target"),progress,stop.Token);
+                var s=await DatasetBuilder.ResetAsync(TestLocation.Reach(a.Required("target")),progress,stop.Token);
                 Console.WriteLine($"削除 {s.DeletedFiles:N0} ファイル・{s.DeletedDirectories:N0} フォルダ / 作り直し {s.RecreatedFiles:N0} / サイズ復元 {s.ResizedFiles:N0} / 書き戻し {s.RewrittenBytes/1048576.0:N1} MiB"
                     +(s.SkippedPaths>0?$" / リンクを経由するなどで戻さなかったパス {s.SkippedPaths:N0}":""));
                 return 0;
             }
             case "replay":
             {
-                string session=a.Required("session"),target=a.Required("target"),planFile=Path.Combine(session,BenchmarkPlanner.PlanFile);
+                string session=a.Required("session"),target=TestLocation.Reach(a.Required("target")),planFile=Path.Combine(session,BenchmarkPlanner.PlanFile);
                 // A benchmark plan carries the timing it was planned for and its thread count.
                 var plan=File.Exists(planFile)?JsonStore.Read<BenchmarkPlan>(planFile):null;
                 if(plan is not null) BenchmarkPlanner.CheckSpace(plan,target,includeDummy:false);
@@ -135,8 +137,10 @@ internal static class Cli
                 return 0;
             }
             case "resolve-root":
-                // Run unelevated: prints the device/UNC forms to pass to an elevated `record --root-device`.
+                // The device/UNC forms a folder is matched by (for `record --root-device`), and the user's network drives with where
+                // they were found (also from an elevated prompt, which has no letters of its own for them).
                 foreach(var root in a.Many("root")) Console.WriteLine(JsonSerializer.Serialize(RootResolver.Resolve(root),JsonStore.Pretty));
+                foreach(var drive in NetworkDrives.List()) Console.WriteLine($"{drive.Drive} = {drive.Share}（{drive.Source}）");
                 return 0;
             case "analyze":
                 var analysis=SessionAnalyzer.Export(a.Required("session"),progress);
@@ -293,7 +297,7 @@ record     --mode Process|Folder|Hybrid --process AfterFX --pid 1234 --root D:\P
            [--no-children] [--no-size-probe] [--no-open-files] [--no-disk] [--lucid lucid.exe] [--lucid-id ID]
            [--launch "C:\Program Files\...\AfterFX.exe" または ショートカット(.lnk)] [--launch-args "..."]
              --launch: 記録を始めてから、そのアプリを（管理者ではない、ふだんの権限で）起動する。起動時の読み込みも記録に入る
-resolve-root --root L:\Production  (通常権限で実行。昇格後に見えないドライブのデバイスパス・UNCを表示)
+resolve-root --root L:\Production  (昇格後に見えないドライブのデバイスパス・UNCと、ネットワークドライブの一覧を表示)
 generate   --session <記録フォルダ> --target L:\Bench\20261017-153012_AfterFX [--seed 42]
            [--process-only] [--root-only]  (replay と同じ範囲を指定。その範囲が使うファイルだけ作る)
            [--location Z:\Project ...] [--all-locations]  (この場所の中のI/Oだけでダミーを作る。replay はダミーの場所だけを再生する)

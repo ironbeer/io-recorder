@@ -101,6 +101,41 @@ public static class TestLocation
         if (!PathPolicy.IsUnder(full, profile) || PathPolicy.IsUnder(full, Path.Combine(profile, "AppData"))) return null;
         return "試験先がユーザーのフォルダ（デスクトップ・ドキュメントなど）の中です。ここは通常Windowsの検索インデックスの対象で、書き換えたファイルをインデクサーが読みに来るため、そのI/Oが試験に混ざります。C:\\IOTest のような、ユーザーのフォルダの外をおすすめします。";
     }
+
+    // The test folder as this process opens it (a network drive becomes its share: Z:\IOTest → \\server\share\IOTest), checked
+    // before anything is written there. A share the administrator side had not used yet once refused it and took it a little
+    // later (a Samba share, "ネットワーク名が見つかりません"), so a share is asked twice before giving up.
+    public static string Reach(string folder)
+    {
+        string path = NetworkDrives.Accessible(PathPolicy.NormalizeRoot(folder)), root = Path.GetPathRoot(path)!;
+        if (path[1] == ':')
+        {
+            if (!Directory.Exists(root)) throw new IOException($"試験先のドライブ {root[..2]} が見つかりません: {folder}\nネットワークドライブなら、\\\\サーバー名\\共有名\\… の形で指定してください。");
+            return path;
+        }
+        if (Unreachable(root) is not null)
+        {
+            Thread.Sleep(2000);
+            if (Unreachable(root) is { } error)
+                throw new IOException($"試験先の共有 {root} に、このツールから届きません（{error.TrimEnd()}）。\nエクスプローラーでこの共有を開けるか確かめてから、もう一度試してください。共有にパスワードがあるときは、資格情報（ユーザー名とパスワード）をWindowsに保存しておくと、管理者で動くこのツールからも使えます。");
+        }
+        return path;
+    }
+    private static string? Unreachable(string share)
+    {
+        // Listing the share is refused when only its folders are open to the user: the share answered, so it is reachable.
+        try { using var entries = Directory.EnumerateFileSystemEntries(share).GetEnumerator(); entries.MoveNext(); return null; }
+        catch (UnauthorizedAccessException) { return null; }
+        catch (IOException ex) { return ex.Message; }
+    }
+
+    // Free bytes for this user where the folder is, also on a share; null when it cannot be read.
+    public static long? FreeBytes(string folder)
+    {
+        string full = Path.GetFullPath(folder), root = full.StartsWith(@"\\", StringComparison.Ordinal) ? NetworkDrives.ShareRoot(full) : Path.GetPathRoot(full)!;
+        return GetDiskFreeSpaceEx(root, out long free, out _, out _) ? free : null;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool GetDiskFreeSpaceEx(string directory, out long freeToCaller, out long total, out long totalFree);
 }
 
 public static class NetworkAdapters
@@ -319,12 +354,22 @@ public sealed class EnvironmentInfo
         foreach (var root in options.ResolvedRoots) info.Volumes.Add(Volume("対象フォルダ", root.UserPath, root.UncPath));
         info.Volumes.Add(Volume("記録の保存先", output, null));
         // Every other drive too: a recording of an application finds out which drives it used only afterwards.
+        var network = NetworkDrives.List();
         try
         {
             foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType is DriveType.Fixed or DriveType.Removable or DriveType.Network))
-                if (!info.Volumes.Any(v => string.Equals(v.Root, drive.Name, StringComparison.OrdinalIgnoreCase))) info.Volumes.Add(Volume("ドライブ", drive.Name, null));
+                if (!info.Volumes.Any(v => string.Equals(v.Root, drive.Name, StringComparison.OrdinalIgnoreCase)) && !network.Any(n => drive.Name.StartsWith(n.Drive, StringComparison.OrdinalIgnoreCase)))
+                    info.Volumes.Add(Volume("ドライブ", drive.Name, null));
         }
         catch (IOException ex) { info.Problems.Add("ドライブ: " + ex.Message); }
+        // The user's network drives, also those this elevated process has no letter for, read through their shares. Each gets a
+        // few seconds: a share that is offline would otherwise hold the record's start for the network's time-out.
+        foreach (var drive in network.Where(d => !info.Volumes.Any(v => string.Equals(v.Root, d.Drive + @"\", StringComparison.OrdinalIgnoreCase))))
+        {
+            var read = Task.Run(() => Volume("ドライブ", drive.Drive + @"\", drive.Share));
+            info.Volumes.Add(read.Wait(TimeSpan.FromSeconds(5)) ? read.Result
+                : new VolumeInfo { Role = "ドライブ", Path = drive.Drive + @"\", Root = drive.Drive + @"\", UncPath = drive.Share, DriveType = "Network", Error = "共有が5秒以内に応答しませんでした。" });
+        }
         try
         {
             foreach (var nic in IoRecorder.Core.NetworkAdapters.List())
@@ -344,13 +389,14 @@ public sealed class EnvironmentInfo
             string target = unc ?? path;
             if (target.StartsWith(@"\\", StringComparison.Ordinal))
             {
-                var parts = target.TrimStart('\\').Split('\\');
-                v.Root = parts.Length >= 2 ? $@"\\{parts[0]}\{parts[1]}\" : target; v.DriveType = "Network";
+                v.Root = NetworkDrives.ShareRoot(target); v.DriveType = "Network";
                 var name = new char[261]; var fs = new char[261];
                 if (GetVolumeInformation(v.Root, name, name.Length, out _, out _, out _, fs, fs.Length)) { v.Label = new string(name).TrimEnd('\0'); v.FileSystem = new string(fs).TrimEnd('\0'); }
                 if (GetDiskFreeSpaceEx(v.Root, out long free, out long total, out _)) { v.FreeBytes = free; v.TotalBytes = total; }
+                // A network drive keeps the letter the user knows (Z:\); its share is in UncPath.
+                if (!path.StartsWith(@"\\", StringComparison.Ordinal) && System.IO.Path.GetPathRoot(path) is { Length: > 0 } drive) v.Root = drive;
             }
-            if (!path.StartsWith(@"\\", StringComparison.Ordinal) && System.IO.Path.GetPathRoot(path) is { Length: > 0 } letter)
+            else if (System.IO.Path.GetPathRoot(path) is { Length: > 0 } letter)
             {
                 var d = new DriveInfo(letter);
                 v.Root = d.Name; v.DriveType = d.DriveType.ToString();

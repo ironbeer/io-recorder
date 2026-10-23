@@ -161,12 +161,14 @@ public sealed class EtwRecorder
         var probeTask=Task.Run(async()=>
         {
             using var stream=new StreamWriter(Path.Combine(output,"sizes.jsonl"),false,new UTF8Encoding(false)) { AutoFlush=true };
+            // A file under a folder given on a network drive (Z:\…) is looked up through its share: this process has no Z:.
+            var shares=NetworkDrives.Elsewhere();
             await foreach(var path in probes.Reader.ReadAllAsync())
             {
                 var observation=new SizeObservation { Path=path,ObservedUs=NowUs };
                 try
                 {
-                    var info=new FileInfo(path); observation.IsDirectory=(info.Attributes&FileAttributes.Directory)!=0; observation.Size=observation.IsDirectory?null:info.Length;
+                    var info=new FileInfo(NetworkDrives.Accessible(path,shares)); observation.IsDirectory=(info.Attributes&FileAttributes.Directory)!=0; observation.Size=observation.IsDirectory?null:info.Length;
                     observation.Attributes=(uint)info.Attributes; observation.CreatedUtc=info.CreationTimeUtc; observation.LastWriteUtc=info.LastWriteTimeUtc;
                 }
                 catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { observation.Error=ex.GetType().Name; }

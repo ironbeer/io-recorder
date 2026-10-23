@@ -60,6 +60,9 @@ public sealed class RecordingOptions
         Roots = Roots.Select(PathPolicy.NormalizeRoot).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var given = ResolvedRoots.Where(r => !string.IsNullOrWhiteSpace(r.UserPath)).ToArray();
         ResolvedRoots = Roots.Select(root => given.FirstOrDefault(r => PathPolicy.NormalizeRoot(r.UserPath).Equals(root, StringComparison.OrdinalIgnoreCase)) ?? RootResolver.Resolve(root)).ToArray();
+        // Nothing would ever match a folder on a drive the recorder cannot place.
+        foreach (var root in ResolvedRoots.Where(RootResolver.Unknown))
+            throw new ArgumentException($"対象フォルダのドライブ {root.UserPath[..2]} が見つかりません: {root.UserPath}\nネットワークドライブなら、\\\\サーバー名\\共有名\\… の形で指定してください。");
         ProcessNames = ProcessNames.Select(p => Path.GetFileNameWithoutExtension(p.Trim())).Where(p => p.Length > 0).ToArray();
         foreach (var root in Roots)
             if (PathPolicy.IsUnder(output, root))

@@ -108,12 +108,7 @@ public static class DatasetBuilder
             else m.InitialSizes[g.Key]=g.Max(f=>f.SuggestedInitialSize);
         }
         long required=m.InitialSizes.Values.Aggregate(0L,(sum,size)=>checked(sum+size));
-        var driveRoot=Path.GetPathRoot(destination);
-        if(driveRoot?.Length==3)
-        {
-            var drive=new DriveInfo(driveRoot);
-            if(required>drive.AvailableFreeSpace) throw new IOException($"生成に必要な容量 {required/1073741824.0:N1} GiB が空き容量を超えています。");
-        }
+        if(TestLocation.FreeBytes(destination) is { } free && required>free) throw new IOException($"生成に必要な容量 {required/1073741824.0:N1} GiB が空き容量を超えています。");
         Directory.CreateDirectory(destination);
         JsonStore.Write(Path.Combine(destination,Marker),m);
         // A file or folder the storage refuses (a name it does not accept, a path too long) is left out like an unconvertible

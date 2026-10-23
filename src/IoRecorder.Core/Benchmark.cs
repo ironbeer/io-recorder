@@ -157,9 +157,9 @@ public static class BenchmarkPlanner
     // writes. Drive letters only; for a UNC share the storage reports its own errors.
     public static void CheckSpace(BenchmarkPlan plan,string target,bool includeDummy)
     {
-        var root=Path.GetPathRoot(Path.GetFullPath(target));
-        if(root is not { Length:3 }) return;
-        long free=new DriveInfo(root).AvailableFreeSpace,need=plan.NewFileBytes+(includeDummy?plan.InitialBytes:0);
+        // Also on a share; a place whose free space cannot be read is not checked.
+        if(TestLocation.FreeBytes(target) is not { } free) return;
+        long need=plan.NewFileBytes+(includeDummy?plan.InitialBytes:0);
         if(need>free) throw new IOException($"試験先の空き容量が足りません: 必要 {Size(need)}（{(includeDummy?$"ダミー {Size(plan.InitialBytes)} + ":"")}実行中に新しく書くファイル {Size(plan.NewFileBytes)}）／ 空き {Size(free)}。totalTransfer・duration・fileSets を小さくするか、別の試験先を選んでください。");
     }
     public static string Size(long bytes)=>bytes>=1L<<30?$"{bytes/1073741824.0:N1} GiB":$"{bytes/1048576.0:N1} MiB";

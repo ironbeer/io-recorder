@@ -194,6 +194,31 @@ public static class AppLauncher
         }
     }
 
+    // Runs the action on this thread as the signed-in user without administrator rights (Explorer's token), for what Windows
+    // keeps per sign-in, such as the user's drive letters. False when the desktop or its token cannot be had.
+    internal static bool AsDesktopUser(Action action)
+    {
+        nint shell=GetShellWindow();
+        if(shell==0) return false;
+        GetWindowThreadProcessId(shell,out uint shellPid);
+        nint process=OpenProcess(0x1000,false,shellPid),token=0,impersonation=0; // PROCESS_QUERY_LIMITED_INFORMATION
+        if(process==0) return false;
+        try
+        {
+            // TOKEN_DUPLICATE | TOKEN_QUERY, then TOKEN_IMPERSONATE | TOKEN_QUERY as an impersonation token (SecurityImpersonation)
+            if(!OpenProcessToken(process,0x000A,out token) || !DuplicateTokenEx(token,0x000C,0,2,2,out impersonation) || !SetThreadToken(0,impersonation)) return false;
+            try { action(); }
+            finally { RevertToSelf(); }
+            return true;
+        }
+        finally
+        {
+            if(impersonation!=0) CloseHandle(impersonation);
+            if(token!=0) CloseHandle(token);
+            CloseHandle(process);
+        }
+    }
+
     [ComImport,Guid("00021401-0000-0000-C000-000000000046")] private class ShellLink { }
     [ComImport,InterfaceType(ComInterfaceType.InterfaceIsIUnknown),Guid("000214F9-0000-0000-C000-000000000046")]
     private interface IShellLinkW
@@ -232,6 +257,8 @@ public static class AppLauncher
     [DllImport("advapi32.dll",SetLastError=true)] private static extern bool DuplicateTokenEx(nint token,uint access,nint attributes,int level,int type,out nint duplicate);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
     private static extern bool CreateProcessWithTokenW(nint token,uint logonFlags,string application,StringBuilder commandLine,uint creationFlags,nint environment,string directory,ref StartupInfo startup,out ProcessInformation info);
+    [DllImport("advapi32.dll",SetLastError=true)] private static extern bool SetThreadToken(nint thread,nint token);
+    [DllImport("advapi32.dll",SetLastError=true)] private static extern bool RevertToSelf();
     [DllImport("userenv.dll",SetLastError=true)] private static extern bool CreateEnvironmentBlock(out nint environment,nint token,bool inherit);
     [DllImport("userenv.dll")] private static extern bool DestroyEnvironmentBlock(nint environment);
 }

@@ -76,7 +76,7 @@ public partial class MainWindow
         }
         catch(Exception ex) { ReportError(ex); }
     }
-    private void BrowseBenchTarget(object sender,RoutedEventArgs e) { if(PickFolder("試験先フォルダ（NAS・LucidLinkなど）") is { } p) BenchTargetBox.Text=p; }
+    private void BrowseBenchTarget(object sender,RoutedEventArgs e) { if(PickFolder("試験先フォルダ（NAS・LucidLinkなど）",letters:true) is { } p) BenchTargetBox.Text=p; }
     private void OpenBenchFolder(object sender,RoutedEventArgs e)
     {
         string dir=_benchFolder ?? AppPaths.Benchmarks;
@@ -129,6 +129,9 @@ public partial class MainWindow
             var token=_stop.Token; var work=new Progress<WorkProgress>(ShowBenchProgress);
             if(generate)
             {
+                // A network drive is used through its share; a share that does not answer stops here, before anything is written.
+                string given=targetRoot!;
+                targetRoot=await Task.Run(()=>TestLocation.Reach(given),token);
                 // The I/O list is derived from the configuration and seed each time; it is an internal step of generating.
                 // Benchmarks\yyyyMMdd-HHmmss_<config>_seed<N>; the dummy folder on the test target gets the same name.
                 string folder=AppPaths.NewFolder(AppPaths.Benchmarks,$"{configName}_{Seeds.Tag(Seeds.Normalize(config!.Seed)??"42")}"),name=Path.GetFileName(folder);

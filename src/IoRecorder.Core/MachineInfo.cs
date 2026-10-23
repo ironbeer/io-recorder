@@ -120,6 +120,10 @@ public sealed class SmbChannelInfo
     public long? ClientLinkSpeedBitsPerSecond { get; set; }
     public bool? ClientRss { get; set; }
     public bool? ClientRdma { get; set; }
+    // This PC's adapter (its index and name) and IPv4 or IPv6; the addresses are not kept.
+    public int? ClientAdapterIndex { get; set; }
+    public string? ClientAdapter { get; set; }
+    public string? IpVersion { get; set; }
 }
 public sealed class AntivirusInfo
 {
@@ -180,16 +184,7 @@ internal static class MachineDetails
         if (pools.Count > 0 && info.StorageSpaces.Count == 0) problems.Add("記憶域プールはありますが、仮想ディスクを読めませんでした。");
         Ntfs(info, problems);
         Smb(info, problems);
-        try
-        {
-            using var network = Registry.CurrentUser.OpenSubKey("Network");
-            foreach (var letter in network?.GetSubKeyNames() ?? [])
-            {
-                using var drive = network!.OpenSubKey(letter);
-                if (drive?.GetValue("RemotePath") is string remote) info.MappedDrives[letter.ToUpperInvariant() + ":"] = remote;
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) { problems.Add("ネットワークドライブの割り当て: " + ex.Message); }
+        foreach (var drive in NetworkDrives.List()) info.MappedDrives[drive.Drive] = drive.Share;
         foreach (var o in Query(@"root\cimv2", "SELECT Enabled, Active FROM Win32_OfflineFilesCache", problems, "オフラインファイル"))
         { info.OfflineFilesEnabled = Value<bool>(o, "Enabled"); info.OfflineFilesActive = Value<bool>(o, "Active"); }
         foreach (var o in Query(@"root\SecurityCenter2", "SELECT displayName, productState FROM AntiVirusProduct", problems, "ウイルス対策"))
@@ -211,8 +206,10 @@ internal static class MachineDetails
             if (Text(o, "DriveLetter") is { Length: > 0 } letter && Int(o, "ProtectionStatus") is { } status) encryption[letter] = status;
         foreach (var v in info.Volumes)
         {
-            if (v.Root is not { Length: > 0 } root) continue;
-            if (GetDiskFreeSpace(root, out uint sectorsPerCluster, out uint bytesPerSector, out _, out _)) v.ClusterBytes = (long)sectorsPerCluster * bytesPerSector;
+            if (v.Root is not { Length: > 0 } root || v.Error is not null) continue;
+            // A network drive is read through its share (this elevated process may have no letter for it).
+            string volume = v.DriveType == "Network" && v.UncPath is { } unc ? NetworkDrives.ShareRoot(unc) : root;
+            if (GetDiskFreeSpace(volume, out uint sectorsPerCluster, out uint bytesPerSector, out _, out _)) v.ClusterBytes = (long)sectorsPerCluster * bytesPerSector;
             if (root.Length >= 2 && root[1] == ':')
             {
                 string letter = root[..2].ToUpperInvariant();
@@ -284,11 +281,19 @@ internal static class MachineDetails
             info.SmbConnections.Add(new() { Server = Text(o, "ServerName"), Share = Text(o, "ShareName"), Dialect = Text(o, "Dialect"), Signed = Value<bool>(o, "Signed"), Encrypted = Value<bool>(o, "Encrypted"),
                 ContinuouslyAvailable = Value<bool>(o, "ContinuouslyAvailable"), OpenFiles = Int(o, "NumOpens") });
         // Without the addresses at either end.
+        // Which of this PC's adapters a channel uses and over IPv4 or IPv6 (two channels over one adapter are not twice the speed).
         foreach (var o in Query(smb, "SELECT * FROM MSFT_SmbMultichannelConnection", problems, "SMBのマルチチャネル"))
-            info.SmbChannels.Add(new() { Server = Text(o, "ServerName"), Selected = Value<bool>(o, "Selected"), ClientLinkSpeedBitsPerSecond = Long(o, "ClientLinkSpeed"), ClientRss = Value<bool>(o, "ClientRSSCapable"), ClientRdma = Value<bool>(o, "ClientRdmaCapable") });
-        foreach (var o in Query(smb, "SELECT * FROM MSFT_SmbClientConfiguration", problems, "SMBクライアントの設定").Take(1))
-            foreach (var p in o.Properties)
-                if (p.Value is { } value && p.Name is not ("PSComputerName")) info.SmbClient[p.Name] = value is Array array ? string.Join(", ", array.Cast<object>()) : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+            info.SmbChannels.Add(new() { Server = Text(o, "ServerName"), Selected = Value<bool>(o, "Selected"), ClientLinkSpeedBitsPerSecond = Long(o, "ClientLinkSpeed"), ClientRss = Value<bool>(o, "ClientRSSCapable"), ClientRdma = Value<bool>(o, "ClientRdmaCapable"),
+                ClientAdapterIndex = Int(o, "ClientInterfaceIndex"), ClientAdapter = Text(o, "ClientInterfaceFriendlyName"), IpVersion = Text(o, "ClientIpAddress") is { } address ? address.Contains(':') ? "IPv6" : "IPv4" : null });
+        // The client's settings are returned by a call (GetConfiguration); listing the class gives nothing.
+        try
+        {
+            using var client = new ManagementClass(new ManagementScope(smb), new ManagementPath("MSFT_SmbClientConfiguration"), null);
+            if (client.InvokeMethod("GetConfiguration", null, new InvokeMethodOptions(null, TimeSpan.FromSeconds(15)))?["Output"] is ManagementBaseObject o)
+                foreach (var p in o.Properties)
+                    if (p.Value is { } value && p.Name is not ("PSComputerName")) info.SmbClient[p.Name] = value is Array array ? string.Join(", ", array.Cast<object>()) : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        }
+        catch (Exception ex) when (Wmi(ex)) { problems.Add("SMBクライアントの設定: " + ex.Message); }
     }
 
     // Names and drivers from WMI; the memory from the display adapters' registry keys (WMI's value stops at 4 GiB).

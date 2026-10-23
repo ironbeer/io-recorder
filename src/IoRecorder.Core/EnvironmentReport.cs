@@ -36,16 +36,20 @@ public static class EnvironmentReport
 
         // The storage this record used: the drives of its files and the folders it was given, then where it was saved.
         var used = new HashSet<string>(a.Files.Select(f => PathPolicy.VolumeOf(f.Path)).Where(v => v.Length > 0), StringComparer.OrdinalIgnoreCase);
-        static string Key(VolumeInfo v) => PathPolicy.VolumeOf(v.Root ?? v.Path);
-        var volumes = env.Volumes.Where(v => v.Role != "ドライブ" || used.Contains(Key(v))).ToList();
+        // A network drive is its share: its files may be recorded with the letter (a folder given as Z:\…) or as \\server\share.
+        static string Key(VolumeInfo v) => PathPolicy.VolumeOf(v.UncPath ?? v.Root ?? v.Path);
+        var volumes = env.Volumes.Where(v => v.Role != "ドライブ" || used.Contains(Key(v)) || used.Contains(PathPolicy.VolumeOf(v.Root ?? v.Path))).ToList();
         var storage = new List<string>();
         // One line per drive, with every role it has (the folders given and where the record was saved are often on one drive).
         foreach (var group in volumes.GroupBy(Key, StringComparer.OrdinalIgnoreCase))
         {
             var v = group.First();
             string roles = string.Join("・", group.Select(x => x.Role == "ドライブ" ? "この記録が使ったドライブ" : $"{x.Role} {x.Path}"));
-            var line = new StringBuilder($"{E(v.Root ?? v.Path)}（{E(roles)}）: {E(v.FileSystem ?? "—")}");
+            var line = new StringBuilder($"{E(Place(v))}（{E(roles)}）: {E(v.FileSystem ?? "—")}");
+            if (v.Error is { } error) line.Append($"・{E(error)}");
             if (v.ClusterBytes is { } cluster) line.Append($"・クラスタ {B(cluster)}");
+            // A share names a file system and an allocation unit of its own choosing (Samba: NTFS and 1 KiB by default).
+            if (v.DriveType == "Network" && (v.FileSystem is not null || v.ClusterBytes is not null)) line.Append("（共有が名乗る値で、NASのディスクのものとは限らない）");
             if (v.BitLocker is { } bitlocker) line.Append($"・BitLocker {E(bitlocker)}");
             if (v.TotalBytes is { } total) line.Append($"・空き {B(v.FreeBytes)} / {B(total)}");
             foreach (var d in env.Disks.Where(d => v.DiskNumbers.Contains(d.Number)))
@@ -54,7 +58,7 @@ public static class EnvironmentReport
             {
                 var parts = unc.TrimStart('\\').Split('\\');
                 foreach (var s in env.SmbConnections.Where(s => parts.Length >= 2 && string.Equals(s.Server, parts[0], StringComparison.OrdinalIgnoreCase) && string.Equals(s.Share, parts[1], StringComparison.OrdinalIgnoreCase)))
-                    line.Append($" → SMB {E(s.Dialect)}・署名 {Yes(s.Signed)}・暗号化 {Yes(s.Encrypted)}・マルチチャネル {(env.SmbChannels.Count(ch => string.Equals(ch.Server, s.Server, StringComparison.OrdinalIgnoreCase)) is > 1 and var n ? $"{n}本" : "なし")}");
+                    line.Append($" → SMB {E(s.Dialect)}・署名 {Yes(s.Signed)}・暗号化 {Yes(s.Encrypted)}・マルチチャネル {E(Channels(env.SmbChannels.Where(ch => string.Equals(ch.Server, s.Server, StringComparison.OrdinalIgnoreCase)).ToList()))}");
             }
             storage.Add(line.ToString());
         }
@@ -85,11 +89,11 @@ public static class EnvironmentReport
             env.Disks.Select(d => Row(d.Number.ToString(CultureInfo.InvariantCulture), d.Name, d.MediaType, d.BusType, B(d.SizeBytes), d.Firmware, d.Health,
                 d.TemperatureC is null && d.WearPercent is null ? "—" : $"{d.TemperatureC?.ToString() ?? "—"} °C・{d.WearPercent?.ToString() ?? "—"}%", string.Join(" ", d.DriveLetters)))));
         details.Append(Table("ドライブ", ["ドライブ", "役割", "ファイルシステム", "クラスタ", "BitLocker", "空き / 容量", "ディスク"],
-            env.Volumes.Select(v => Row(v.Root ?? v.Path, v.Role, v.FileSystem, B(v.ClusterBytes), v.BitLocker ?? "—", $"{B(v.FreeBytes)} / {B(v.TotalBytes)}", string.Join(" ", v.DiskNumbers)))));
+            env.Volumes.Select(v => Row(Place(v), v.Role, v.DriveType == "Network" && v.FileSystem is { } named ? named + "（共有が名乗る値）" : v.FileSystem, B(v.ClusterBytes), v.BitLocker ?? "—", $"{B(v.FreeBytes)} / {B(v.TotalBytes)}", string.Join(" ", v.DiskNumbers)))));
         details.Append(Table("ストレージのコントローラー", ["名前", "メーカー", "ドライバー", "日付"], env.StorageControllers.Select(x => Row(x.Name, x.Manufacturer, x.DriverVersion, x.DriverDate))));
         details.Append(Table("記憶域スペース", ["名前", "プール", "方式", "列", "ストライプ", "容量", "状態"], env.StorageSpaces.Select(s => Row(s.Name, s.Pool, s.Resiliency, s.Columns?.ToString(), B(s.InterleaveBytes), B(s.SizeBytes), s.Health))));
         details.Append(Table("SMBの接続", ["サーバー", "共有", "バージョン", "署名", "暗号化", "開いているファイル"], env.SmbConnections.Select(s => Row(s.Server, s.Share, s.Dialect, Yes(s.Signed), Yes(s.Encrypted), s.OpenFiles?.ToString()))));
-        details.Append(Table("SMBのマルチチャネル", ["サーバー", "使用中", "PC側の速さ", "RSS", "RDMA"], env.SmbChannels.Select(s => Row(s.Server, Yes(s.Selected), s.ClientLinkSpeedBitsPerSecond is { } bps ? $"{bps / 1e9:N1} Gbps" : "—", Yes(s.ClientRss), Yes(s.ClientRdma)))));
+        details.Append(Table("SMBのマルチチャネル", ["サーバー", "使用中", "このPCのアダプター", "IP", "PC側の速さ", "RSS", "RDMA"], env.SmbChannels.Select(s => Row(s.Server, Yes(s.Selected), s.ClientAdapter ?? s.ClientAdapterIndex?.ToString() ?? "—", s.IpVersion ?? "—", s.ClientLinkSpeedBitsPerSecond is { } bps ? $"{bps / 1e9:N1} Gbps" : "—", Yes(s.ClientRss), Yes(s.ClientRdma)))));
         details.Append(Table("ネットワークドライブの割り当て", ["ドライブ", "共有"], env.MappedDrives.Select(p => Row(p.Key, p.Value))));
         details.Append(Table("ネットワークアダプター", ["名前", "説明", "種類", "速さ", "状態"], env.NetworkAdapters.Select(n => Row(n.Name, n.Description, n.Type, n.SpeedBitsPerSecond > 0 ? $"{n.SpeedBitsPerSecond / 1e9:N1} Gbps" : "—", n.Status))));
         details.Append(Table("メモリ", ["容量", "速さ", "メーカー", "型番"], env.MemoryModules.Select(x => Row(B(x.CapacityBytes), (x.ConfiguredSpeedMHz is > 0 ? x.ConfiguredSpeedMHz : x.SpeedMHz) is { } s && s > 0 ? $"{s} MHz" : "—", x.Manufacturer, x.PartNumber))));
@@ -113,4 +117,16 @@ public static class EnvironmentReport
 <details class="env"><summary>詳しく見る（environment.json）</summary>{details}</details></section>
 """;
     }
+    // The channels to one server: how many, and over how many of this PC's adapters (two over one adapter, often its IPv4 and
+    // IPv6, are not twice the speed). Records made before the adapters were kept give the count only.
+    private static string Channels(List<SmbChannelInfo> channels)
+    {
+        if (channels.Count < 2) return "なし";
+        var adapters = channels.Select(c => c.ClientAdapterIndex?.ToString() ?? c.ClientAdapter).Where(a => a is not null).Distinct().Count();
+        var versions = channels.Select(c => c.IpVersion).Where(v => v is not null).Distinct().Order().ToList();
+        return adapters == 0 ? $"{channels.Count}本" : $"{channels.Count}本（このPCのアダプター{adapters}つ{(versions.Count > 1 ? "・" + string.Join("と", versions) : "")}）";
+    }
+    // Where a drive is: its root, and the share behind a network drive's letter (Z:\ = \\server\share).
+    private static string Place(VolumeInfo v) =>
+        v.UncPath is { } unc && v.Root is { Length: 3 } letter ? $"{letter} = {NetworkDrives.ShareRoot(unc).TrimEnd('\\')}" : v.Root ?? v.Path;
 }

@@ -610,6 +610,7 @@ await Test("machine: per-second samples and the environment are collected withou
     Check(!string.IsNullOrEmpty(info.CpuModel) && info.Volumes.Count(v=>v.Role!="ドライブ")==2 && info.Volumes.All(v=>v.FileSystem is { Length: > 0 } && v.FreeBytes>0),"CPU model and the drives of the target and of the record");
     // The rest of the machine from WMI and the registry (some parts need administrator rights and are noted as problems).
     Check(info.Computer?.Manufacturer is { Length: > 0 } && info.Cpu?.LogicalProcessors>0 && info.Disks.Count>0 && info.Power is not null && info.BootTimeUtc<DateTimeOffset.UtcNow,"PC, CPU, disks, power and boot time");
+    Check(info.SmbClient.ContainsKey("RequireSecuritySignature"),"the SMB client's settings (returned by a call, not listed)");
     Check(info.Volumes.Where(v=>v.Role!="ドライブ").All(v=>v.ClusterBytes>0 && v.DiskNumbers.Count>0 && v.DiskNumbers.All(n=>info.Disks.Any(d=>d.Number==n))),"cluster size and the disks behind the drives");
     // At the top of the HTML report, from environment.json; the filter count takes only the filters' lines.
     info.FilterDrivers=["Filter Name   Num Instances   Altitude   Frame","------------  -------------  --------  -----","WdFilter   11   328010   0","bindflt   1   409800   0","エラー: 0x80070005"];
@@ -956,6 +957,40 @@ await Test("launch: a shortcut gives its program, and the application started fo
     try { Check(AppLauncher.Start(app)>0,"started"); }
     catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception && Environment.GetEnvironmentVariable("CI")=="true") { Console.WriteLine("  (CI: no desktop to start an application from: "+ex.Message+")"); }
     Check(AppLauncher.StartMenu().All(a=>File.Exists(a.Path) && a.Path.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)),"the Start menu lists programs that exist");
+});
+await Test("network drives: a mapped drive is its share, also where the letter is not there; unknown drives and unreachable shares stop with a reason",async()=>
+{
+    // The device of a mapped drive and the paths of its files, as Windows and ETW write them.
+    Check(NetworkDrives.UncOf(@"\Device\LanmanRedirector\;Z:000000000001a2b3\nas\share")==@"\\nas\share","a mapped drive's device");
+    Check(NetworkDrives.UncOf(@"\Device\Mup\;LanmanRedirector\;Z:000000000001a2b3\nas\share\素材\a.png")==@"\\nas\share\素材\a.png","a file opened through the drive letter");
+    Check(NetworkDrives.UncOf(@"\Device\Mup\nas\share\a")==@"\\nas\share\a" && NetworkDrives.UncOf(@"\??\UNC\nas\share")==@"\\nas\share","UNC through Mup and \\??\\UNC");
+    Check(NetworkDrives.UncOf(@"\Device\HarddiskVolume3\a")==null && NetworkDrives.UncOf(@"\Device\Mup\")==null && NetworkDrives.UncOf(@"\??\C:\a")==null,"a local volume is not a share");
+    string file=new DevicePathMapper().Map(@"\Device\Mup\;LanmanRedirector\;Z:000000000001a2b3\nas\share\素材\a.png");
+    var matcher=new RootMatcher([new ResolvedRoot { UserPath=@"Z:\素材",UncPath=@"\\nas\share\素材" }]);
+    Check(file==@"\\nas\share\素材\a.png" && matcher.Match(file,file,out var shown) && shown==@"Z:\素材\a.png","matched to the folder given with the letter");
+    // A folder picked on a share is written with the user's letter; the deepest mapping wins.
+    NetworkDrive[] drives=[new("Z:",@"\\nas\share","test"),new("Y:",@"\\nas\share\sub","test")];
+    Check(NetworkDrives.ToDrive(@"\\nas\share\素材",drives)==@"Z:\素材" && NetworkDrives.ToDrive(@"\\NAS\share",drives)==@"Z:\" && NetworkDrives.ToDrive(@"\\nas\share\sub\x",drives)==@"Y:\x","to the drive letter");
+    Check(NetworkDrives.ToDrive(@"\\nas\share2\x",drives)==@"\\nas\share2\x" && NetworkDrives.ShareRoot(@"\\nas\share\a\b")==@"\\nas\share\","another share stays as it is");
+    // A letter that is no drive here and no network drive of the user.
+    var taken=Environment.GetLogicalDrives().Select(d=>d[..2]).Concat(NetworkDrives.List().Select(d=>d.Drive)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    string free=Enumerable.Range('D',23).Select(c=>(char)c+":").Last(d=>!taken.Contains(d));
+    await Throws<ArgumentException>(()=>Task.Run(()=>new RecordingOptions { Mode=CaptureMode.Folder,Roots=[free+@"\素材"] }.Validate(Sub("network-out"))));
+    try { TestLocation.Reach(free+@"\IOTest"); throw new Exception("an unknown drive was accepted"); }
+    catch(IOException ex) { Check(ex.Message.Contains($"ドライブ {free} が見つかりません"),"the drive is named: "+ex.Message); }
+    try { TestLocation.Reach(@"\\localhost\iorecorder-no-such-share\IOTest"); throw new Exception("an unreachable share was accepted"); }
+    catch(IOException ex) { Check(ex.Message.Contains("届きません"),"the share and the reason: "+ex.Message); }
+    string local=Sub("reach"); Directory.CreateDirectory(local);
+    Check(TestLocation.Reach(local+@"\")==local && TestLocation.FreeBytes(local)>0,"a local folder is used as it is, with its free space");
+    // The report: a network drive shows its share, and the share's SMB connection.
+    var env=new EnvironmentInfo { Volumes=[new() { Role="対象フォルダ",Path=@"Z:\素材",Root=@"Z:\",UncPath=@"\\nas\share\素材",DriveType="Network",FileSystem="NTFS",ClusterBytes=1024 }],
+        SmbConnections=[new() { Server="nas",Share="share",Dialect="3.1.1",Signed=true,Encrypted=false }],
+        SmbChannels=[new() { Server="nas",ClientAdapterIndex=5,IpVersion="IPv4" },new() { Server="nas",ClientAdapterIndex=5,IpVersion="IPv6" }] };
+    string record=DemoSession.Create(Sub("network-report"));
+    JsonStore.Write(Path.Combine(record,"environment.json"),env); SessionAnalyzer.Export(record);
+    string html=File.ReadAllText(Path.Combine(record,"report.html"));
+    Check(html.Contains(@"Z:\ = \\nas\share（対象フォルダ Z:\素材）: NTFS・クラスタ 1 KiB（共有が名乗る値") && html.Contains("SMB 3.1.1"),"the drive with its share, what the share names itself, and SMB");
+    Check(html.Contains("マルチチャネル 2本（このPCのアダプター1つ・IPv4とIPv6）"),"two channels over one adapter are told apart from two adapters");
 });
 
 int failures=results.Count(r=>!r.Passed);

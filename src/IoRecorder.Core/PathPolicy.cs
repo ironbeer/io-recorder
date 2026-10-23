@@ -138,7 +138,8 @@ public sealed class DevicePathMapper
     {
         if (path.StartsWith(@"\??\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + path[8..];
         if (path.StartsWith(@"\??\")) return path[4..];
-        if (path.StartsWith(@"\Device\Mup\", StringComparison.OrdinalIgnoreCase)) return @"\\" + path[12..];
+        // A file on a share, also opened through a drive letter (\Device\Mup\;LanmanRedirector\;Z:…\server\share\…).
+        if (NetworkDrives.UncOf(path) is { } unc) return unc;
         foreach (var (device, drive) in _devices)
             if (PathPolicy.IsUnder(path, device)) return drive + path[device.Length..];
         return path;
@@ -149,7 +150,8 @@ public sealed class DevicePathMapper
 
 public static class RootResolver
 {
-    // Run this in the user's unelevated context: per-logon drive letters and mapped drives may be invisible after elevation.
+    // Per-sign-in drive letters (a network drive mapped in Explorer) are not there after elevation: the share of such a drive
+    // is found from the user's side (NetworkDrives), so a folder on it is matched by its UNC path.
     public static ResolvedRoot Resolve(string root, string? devicePath = null)
     {
         root = PathPolicy.NormalizeRoot(root);
@@ -160,13 +162,17 @@ public static class RootResolver
         if (result.DevicePath is null && QueryDosDevice(drive, target, target.Capacity) != 0)
         {
             var device = target.ToString().Split('\0')[0];
-            if (device.StartsWith(@"\??\UNC\", StringComparison.OrdinalIgnoreCase)) result.UncPath = @"\\" + device[8..] + rest;
+            if (NetworkDrives.UncOf(device) is { } share) result.UncPath = share.TrimEnd('\\') + rest;
             else if (!device.StartsWith(@"\??\")) result.DevicePath = device + rest;
         }
         int length = 1024; var remote = new StringBuilder(length);
         if (WNetGetConnection(drive, remote, ref length) == 0 && remote.Length > 0) result.UncPath = remote.ToString().TrimEnd('\\') + rest;
+        if (result.UncPath is null && result.DevicePath is null && NetworkDrives.Accessible(root) is var unc && unc != root) result.UncPath = unc;
         return result;
     }
+    // A drive letter that is neither a drive of this process nor a network drive of the user (a typing slip, a drive taken off).
+    public static bool Unknown(ResolvedRoot root) =>
+        root.UncPath is null && root.DevicePath is null && root.UserPath.Length > 1 && root.UserPath[1] == ':' && QueryDosDevice(root.UserPath[..2], new StringBuilder(1024), 1024) == 0;
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint QueryDosDevice(string name, StringBuilder target, int size);
     [DllImport("mpr.dll", CharSet = CharSet.Unicode)]

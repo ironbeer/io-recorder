@@ -21,6 +21,7 @@ public partial class MainWindow
     {
         if(_stop is not null) return;
         var d=new OpenFolderDialog { Title="zipの保存先のフォルダ",Multiselect=false,InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory) };
+        AddNetworkPlaces(d);
         if(d.ShowDialog(this)!=true) return;
         string folder=d.FolderName;
         try
@@ -39,6 +40,7 @@ public partial class MainWindow
     {
         if(_stop is not null) return;
         var d=new OpenFileDialog { Title="記録のzip（「記録をzipで書き出す」で作ったもの）",Filter="zip (*.zip)|*.zip",InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory) };
+        AddNetworkPlaces(d);
         if(d.ShowDialog(this)!=true) return;
         string file=d.FileName;
         try
