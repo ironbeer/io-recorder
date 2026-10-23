@@ -7,6 +7,9 @@ public sealed class ReplayLink
     public string Dataset { get; set; } = "";
     public string? OutcomeFile { get; set; }
     public DateTimeOffset StartedUtc { get; set; }
+    // The replay's preparation ended and its requests began between these (ReplaySummary); missing in older links.
+    public DateTimeOffset? PreparedUtc { get; set; }
+    public DateTimeOffset? FirstRequestUtc { get; set; }
     public double ElapsedSeconds { get; set; }
     public ReplayOptions Options { get; set; } = new();
     // The process that ran the replay: its I/O in the recording is the replayed requests; the rest is the test target's own
@@ -61,6 +64,7 @@ public static class ReplayCapture
         stopRecording.Cancel();
         await recording;
         link.OutcomeFile = summary.OutcomeFile; link.StartedUtc = summary.StartedUtc; link.ElapsedSeconds = summary.ElapsedSeconds;
+        link.PreparedUtc = summary.PreparedUtc; link.FirstRequestUtc = summary.FirstRequestUtc;
         JsonStore.Write(Path.Combine(trace, LinkFile), link);
         summary.TraceFolder = Path.GetRelativePath(session, trace);
         if (summary.OutcomeFile is { } outcome) JsonStore.Write(Path.Combine(session, Path.ChangeExtension(outcome, ".json")), summary);
@@ -142,17 +146,22 @@ public sealed class ReplayComparison
         string marker = Path.Combine(link.Dataset, DatasetBuilder.Marker);
         bool Tool(IoEvent e) => e.Path.StartsWith(marker, StringComparison.OrdinalIgnoreCase);
         locations ??= new();
-        bool InReplay(IoEvent e) => locations.IsEmpty || paths.TryGetValue(e.Path, out var p) && locations.Includes(p);
+        // The replay's own checks of the dummy before its first request (seen as hundreds of "not found" on a share) are its
+        // preparation, not replayed requests: the replay side starts halfway between the end of the checks and the first request.
+        long? setupUs = null;
+        if (link is { ProcessId: not null, PreparedUtc: { } prepared, FirstRequestUtc: { } first })
+            setupUs = (long)((prepared + (first - prepared) / 2 - JsonStore.Read<SessionManifest>(Path.Combine(trace, "session.json")).StartedUtc).TotalMilliseconds * 1000);
+        bool InReplay(IoEvent e) => !(e.ProcessId == link.ProcessId && e.StartUs < setupUs) && (locations.IsEmpty || paths.TryGetValue(e.Path, out var p) && locations.Includes(p));
         var (processes, replayPid) = CountProcesses(session, trace, link, Tool, e => locations.Includes(e.Path), InReplay);
         AnalysisResult original, replay;
         if (scope == ComparisonScope.All) { original = SessionAnalyzer.Load(session, null, locations); replay = Measure(trace, e => !Tool(e) && InReplay(e)); }
         else
         {
             if (replayPid is not { } pid) throw new InvalidDataException("この再生の記録では、再生したプロセスを特定できません。");
-            // What the replay was asked to send: the original within its scope and the folders its dummy was made for.
+            // What the replay was asked to send: the original within its scope and the folders its dummy was made for, without what
+            // a replay never sends (other processes on the target's files, the recorded machine's OS and antivirus).
             var o = link.Options; var made = LocationFilter.Of(o.Locations);
-            original = o.ProcessOnly || o.RootOnly || !made.IsEmpty || !locations.IsEmpty
-                ? Measure(session, e => !(o.ProcessOnly && !e.MatchesProcess) && !(o.RootOnly && !e.MatchesRoot) && made.Includes(e.Path) && locations.Includes(e.Path)) : SessionAnalyzer.Load(session);
+            original = Measure(session, e => !e.ByOtherProcess && !e.ByMachine && !(o.ProcessOnly && !e.MatchesProcess) && !(o.RootOnly && !e.MatchesRoot) && made.Includes(e.Path) && locations.Includes(e.Path));
             replay = Measure(trace, e => e.ProcessId == pid && !Tool(e) && InReplay(e));
         }
         var c = new ReplayComparison { Link = link, Original = original, Replay = replay, Processes = processes, Scope = scope, ReplayProcessId = replayPid, Locations = [.. locations.Folders] };

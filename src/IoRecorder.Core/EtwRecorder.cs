@@ -22,7 +22,7 @@ public sealed class EtwRecorder
     // Free space left on the drive of the record: a warning below the first, the recording is stopped and kept below the second.
     public const long WarnFreeBytes=5L<<30, StopFreeBytes=1L<<30;
     private const string SessionPrefix="IORecorder-";
-    private const int KeyPathLimit=2_000_000, UnresolvedSampleSize=2000;
+    private const int KeyPathLimit=2_000_000, MissingLimit=200_000, UnresolvedSampleSize=2000;
     private static readonly Guid FileIoTaskGuid=new("90cbdc39-4a3e-11d1-84f4-0000f80464e3");
     private long _sequence,_dropped,_unresolved,_written,_rootMatched;
     private volatile bool _stoppedForSpace;
@@ -143,6 +143,8 @@ public sealed class EtwRecorder
         var unresolvedSample=new List<object>();
         // FileKey (the file itself) → its path, from every event and name event that had one.
         var keyPaths=new Dictionary<ulong,string>();
+        var missing=new MissingNames(MissingLimit);
+        bool Missing(string path)=>missing.Contains(path);
         using var backgroundStop=new CancellationTokenSource();
         // The events go to numbered segments, compressed once closed (RecordLog); the sampler below hands them to the OS every
         // second and to the disk every 10 seconds, so a crash loses at most that much.
@@ -251,9 +253,13 @@ public sealed class EtwRecorder
             lastUs=Us(data);
             if(data.ProcessID==Environment.ProcessId && !options.IncludeOwnProcess) return null;
             path=Display(path ?? "",out bool rm);
+            // A request on an open file is not put on a name whose last open found nothing there (MissingNames), unless the record
+            // saw this very handle opened.
+            bool opened=fileObject!=0 && openPaths.ContainsKey(fileObject);
+            if(op!=IoOperation.Open && !opened && Missing(path)) { path=""; rm=false; }
             if(path.Length==0 && fileObject!=0 && openPaths.TryGetValue(fileObject,out var known)) { path=known; rm=roots.Match(known,known,out _); }
             // The file itself may have been named by another handle's event or a name event: its key gives the path.
-            if(path.Length==0 && fileKey!=0 && keyPaths.TryGetValue(fileKey,out var named)) { path=named; rm=roots.Match(named,named,out _); }
+            if(path.Length==0 && fileKey!=0 && keyPaths.TryGetValue(fileKey,out var named) && (op==IoOperation.Open || !Missing(named))) { path=named; rm=roots.Match(named,named,out _); }
             else if(path.Length>0 && fileKey!=0 && keyPaths.Count<KeyPathLimit) keyPaths[fileKey]=path;
             if(fileKey!=0) renames.Observe(fileKey,path,lastUs);
             if(path.Length>0 && PathPolicy.IsUnder(path,output)) return null;
@@ -351,7 +357,7 @@ public sealed class EtwRecorder
         }
         kernel.FileIOName+=Name; kernel.FileIOFileCreate+=Name; kernel.FileIOFileRundown+=Name;
         // The file is gone from memory: its key may be reused for another file.
-        kernel.FileIOFileDelete+=d=> { targetKeys.Remove(d.FileKey); keyPaths.Remove(d.FileKey); };
+        kernel.FileIOFileDelete+=d=> { targetKeys.Remove(d.FileKey); keyPaths.Remove(d.FileKey); renames.Gone(d.FileKey); };
         kernel.FileIOCreate+=d=>
         {
             if(!string.IsNullOrEmpty(d.FileName)) openPaths[d.FileObject]=Display(d.FileName,out _);
@@ -380,7 +386,7 @@ public sealed class EtwRecorder
             if(!pending.Remove(d.IrpPtr,out var e)) return;
             e.EndUs=lastUs; e.NtStatus=unchecked((uint)d.NtStatus);
             if(e.Operation is IoOperation.Read or IoOperation.Write) e.Transferred=e.Failed?0:Math.Min(e.Size,(long)Math.Min(d.ExtraInfo,(ulong)long.MaxValue));
-            if(e.Operation==IoOperation.Open) e.ExtraInfo=d.ExtraInfo;
+            if(e.Operation==IoOperation.Open) { e.ExtraInfo=d.ExtraInfo; missing.Opened(e.Path,e.NtStatus); }
             Emit(e);
         };
         kernel.MemoryHardFault+=d=>

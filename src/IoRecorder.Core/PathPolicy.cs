@@ -117,8 +117,18 @@ public static class PathPolicy
         if (IsReparsePoint(Path.GetFullPath(path)))
             throw new IOException($"ダミーのフォルダがジャンクション・シンボリックリンクになっています: {path}");
     }
+    // One question per path, on the storage being tested and for every path of a dummy before each run: asking whether it is a
+    // file, then a folder, then for its attributes made two or three requests of each path (and two "not found" of a missing one,
+    // which went into the recordings of replays and into records of benchmarks).
     private static bool IsReparsePoint(string path)
-        => (File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+    {
+        uint attributes = GetFileAttributes(Long(path));
+        return attributes != uint.MaxValue && (attributes & (uint)FileAttributes.ReparsePoint) != 0;
+    }
+    // A full path in the form the file APIs take at any length (\\?\C:\…, \\?\UNC\server\share\…).
+    internal static string Long(string path) => path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path : path.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + path[2..] : @"\\?\" + path;
+    [DllImport("kernel32.dll", EntryPoint = "GetFileAttributesW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFileAttributes(string path);
 }
 
 public sealed class DevicePathMapper

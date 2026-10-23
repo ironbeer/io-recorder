@@ -74,7 +74,7 @@ public static class DatasetBuilder
         var lookups=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var e in RecordLog.Read<IoEvent>(session, RecordLog.Events))
         {
-            if(!e.IsFileIo || e.ByOtherProcess || processOnly&&!e.MatchesProcess || rootOnly&&!e.MatchesRoot || !locations.Includes(e.Path)) continue;
+            if(!e.IsFileIo || e.ByOtherProcess || e.ByMachine || processOnly&&!e.MatchesProcess || rootOnly&&!e.MatchesRoot || !locations.Includes(e.Path)) continue;
             if(e.Failed)
             {
                 if(e.Operation==IoOperation.Open && e.NtStatus is 0xC0000034 or 0xC000003A && ReplayExecutor.ReplaysFailure(e) && !string.IsNullOrEmpty(e.Path)) lookups.Add(e.Path);

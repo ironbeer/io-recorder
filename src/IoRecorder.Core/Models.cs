@@ -172,6 +172,12 @@ public sealed class IoEvent
     [JsonIgnore] public bool IsPagingIo => IoFlags is { } flags && (flags & 0x42) != 0;
     [JsonIgnore] public bool IsFileIo => Operation is not (IoOperation.DiskRead or IoOperation.DiskWrite or IoOperation.HardFault or IoOperation.MapView or IoOperation.UnmapView);
     [JsonIgnore] public bool ByOtherProcess => MatchesFile && !MatchesProcess && !MatchesRoot;
+    // The recorded machine's own work on the files, which a folder record takes in with the rest: the OS (System: the cache's
+    // write-back, the mapped page writer) and Microsoft Defender and the search indexer reading what changed. Kept for analysis,
+    // not replayed: the test machine's own OS and antivirus do their share of it for the replayed requests.
+    [JsonIgnore] public bool ByMachine => !MatchesProcess && (ProcessId == 4 || MachineProcesses.Contains(ProcessName));
+    private static readonly HashSet<string> MachineProcesses = new(StringComparer.OrdinalIgnoreCase)
+        { "System", "MsMpEng", "MpDefenderCoreService", "NisSrv", "SearchIndexer", "SearchProtocolHost", "SearchFilterHost" };
     [JsonIgnore] public double? DurationMs => EndUs.HasValue ? Math.Max(0, EndUs.Value - StartUs) / 1000.0 : null;
 }
 
@@ -270,8 +276,9 @@ public sealed class AnalysisResult
     // A saved analysis.json older than this is recomputed (2: per-second latency in the timeline; 3: access patterns; 4: write
     // patterns; 5: latency per file; 6: fast I/O refusals no longer counted as requests or failures, and a path not found below
     // a file no longer makes that file a folder; 7: the exact span of application I/O; 8: paging reads and writes counted
-    // apart from the application's in the operation counts).
-    public const int CurrentVersion = 8;
+    // apart from the application's in the operation counts; 10: summaries made by a development build that left out some
+    // "not found" opens are made again).
+    public const int CurrentVersion = 10;
     public int Version { get; set; }
     public long TotalEvents { get; set; }
     public int FileCount { get; set; }
@@ -382,6 +389,10 @@ public sealed class ReplaySummary
     // The IO Recorder that ran the replay (ToolVersion.Text).
     public string? Tool { get; set; }
     public DateTimeOffset StartedUtc { get; set; } = DateTimeOffset.UtcNow;
+    // When the checks of the dummy before the run were done, and when the first request was due (the requests' clock started).
+    // A recording of the replay counts the replay's own I/O before the time between them as preparation, not as replayed.
+    public DateTimeOffset? PreparedUtc { get; set; }
+    public DateTimeOffset? FirstRequestUtc { get; set; }
     public double ElapsedSeconds { get; set; }
     // Executed: requests sent to the test target, including recorded failures replayed as such.
     public long Executed { get; set; }

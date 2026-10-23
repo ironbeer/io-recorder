@@ -39,7 +39,8 @@ public sealed class ReplayEngine
         options.Locations=[.. m.Locations]; var locations=LocationFilter.Of(m.Locations);
         // A path that would leave the dummy or pass through a junction / symbolic link inside it is skipped, not the whole run.
         var unsafePaths=PathPolicy.UnsafeInside(dataset,m.Paths.Values.Concat(m.Directories).Concat(m.InitialSizes.Keys));
-        var result=new ReplaySummary { SessionId=m.SessionId,Options=options,Tool=ToolVersion.Text };
+        // The checks of the dummy above are the replay's preparation; a recording of the replay leaves them out by this time.
+        var result=new ReplaySummary { SessionId=m.SessionId,Options=options,Tool=ToolVersion.Text,PreparedUtc=DateTimeOffset.UtcNow };
         if(settled is { Seconds: >= 1 } s)
             result.Notes.Add($"再生の前に、OSのディスクへの書き出しが落ち着くのを {s.Seconds:N0} 秒待ちました（未書き出し {s.StartBytes/1048576.0:N0} MiB → {s.EndBytes/1048576.0:N0} MiB）。");
         if(TestLocation.IndexWarning(dataset) is { } indexed) result.Notes.Add(indexed);
@@ -62,7 +63,7 @@ public sealed class ReplayEngine
             paging.Observe(e);
             if(!locations.Includes(e.Path)) continue;
             if(e.IsFileIo && !(options.ProcessOnly&&!e.MatchesProcess) && !(options.RootOnly&&!e.MatchesRoot)) total++;
-            if(e.ByOtherProcess) continue;
+            if(e.ByOtherProcess || e.ByMachine) continue;
             if(!e.Failed && e.Operation is IoOperation.Write or IoOperation.SetEndOfFile or IoOperation.SetAllocation or IoOperation.Flush && !(e.IsPagingIo && options.Paging!=PagingReplay.All))
                 accessPlan[ReplayExecutor.AccessKey(e)]=FileAccess.ReadWrite;
             else if(!e.Failed && e.Operation==IoOperation.Read) accessPlan.TryAdd(ReplayExecutor.AccessKey(e),FileAccess.Read);
@@ -97,7 +98,7 @@ public sealed class ReplayEngine
         // and file, not every other thread behind it.
         int lookAhead=Math.Max(LookAhead,options.Workers*4);
         using var slots=new SemaphoreSlim(lookAhead);
-        var active=new HashSet<Task>(); var gate=new object();
+        var active=new HashSet<Task>(); var gate=new object(); long machine=0;
         // Recorded before the first request, so a reset also knows about runs that were cancelled or crashed.
         m.State="Replaying"; m.Runs.Add(outcomePath); JsonStore.Write(marker,m);
         void Record(IoEvent captured,ReplayOutcome outcome)
@@ -152,12 +153,16 @@ public sealed class ReplayEngine
             {
                 token.ThrowIfCancellationRequested();
                 if(!e.IsFileIo || options.ProcessOnly&&!e.MatchesProcess || options.RootOnly&&!e.MatchesRoot || !locations.Includes(e.Path)) continue;
-                if(!clock.IsRunning) { if(options.TrimLeadingIdle) baseUs=e.StartUs; clock.Start(); reporterTask=StartReporter(); }
+                if(!clock.IsRunning) { if(options.TrimLeadingIdle) baseUs=e.StartUs; clock.Start(); result.FirstRequestUtc=DateTimeOffset.UtcNow; reporterTask=StartReporter(); }
                 long plannedUs=(long)((e.StartUs-baseUs)/options.Speed);
                 // Another process's I/O on the target's files is the recorded machine's own (its cache, antivirus): kept for
                 // analysis, not replayed; the test target's OS does its own.
-                if((e.ByOtherProcess?"SkippedOtherProcess":paging.FlagsAvailable?paging.SkipReason(e,options.Paging):null) is { } skip)
-                { Record(e,new ReplayOutcome { Sequence=e.Sequence,Operation=e.Operation,Path=e.Path,PlannedUs=plannedUs,ActualUs=(long)(clock.Elapsed.TotalMilliseconds*1000),Status=skip }); continue; }
+                // The OS writing a file out keeps its paging reason; the machine's other requests (size changes, closes, scans) get theirs.
+                if((e.ByOtherProcess?"SkippedOtherProcess":(paging.FlagsAvailable?paging.SkipReason(e,options.Paging):null) ?? (e.ByMachine?"SkippedMachineProcess":null)) is { } skip)
+                {
+                    if(skip=="SkippedMachineProcess") machine++;
+                    Record(e,new ReplayOutcome { Sequence=e.Sequence,Operation=e.Operation,Path=e.Path,PlannedUs=plannedUs,ActualUs=(long)(clock.Elapsed.TotalMilliseconds*1000),Status=skip }); continue;
+                }
                 await slots.WaitAsync(token);
                 // A kernel file object is system-wide: another process using the app's file object (an antivirus or the
                 // search indexer querying it) must follow the app's earlier operations on it, even when the app's thread lags.
@@ -213,6 +218,8 @@ public sealed class ReplayEngine
                 result.Notes.Add($"記録で失敗した要求のうち、ダミーでも同じ形で届くもの（無い名前の確認、フォルダをファイルとして開く、末尾より先の読み取り、一覧の終わり、属性の問い合わせ）を再生しました: 同じく失敗 {result.ReproducedFailures:N0} / 失敗しなかった {result.FailuresNotReproduced:N0}。");
             if(result.TemporaryOpens>0)
                 result.Notes.Add($"開いた記録がないファイルへの要求 {result.TemporaryOpens:N0} 件は、その要求のためだけに開いて閉じました（元の記録より Open/Close が多くなります）。");
+            if(machine>0)
+                result.Notes.Add($"記録したPCのOS（System）・Microsoft Defender・検索インデックスのI/O {machine:N0} 件は再生しませんでした（SkippedMachineProcess）。再生先のPCでは、そのPCのOSとウイルス対策が、再生した読み書きに応じて自分で出します。");
             result.PacingErrorP50Ms=pacing.Percentile(.5); result.PacingErrorP95Ms=pacing.Percentile(.95);
             result.Cancelled|=token.IsCancellationRequested;
             m.State="Consumed"; JsonStore.Write(marker,m);
@@ -511,7 +518,7 @@ internal sealed class ReplayExecutor : IDisposable
         AddDirectory(path);
     }
     // Win32 calls made here directly need the extended prefix for long paths (File.* adds it by itself).
-    private static string Long(string path)=>path.StartsWith(@"\\?\",StringComparison.Ordinal)?path:path.StartsWith(@"\\",StringComparison.Ordinal)?@"\\?\UNC\"+path[2..]:@"\\?\"+path;
+    private static string Long(string path)=>PathPolicy.Long(path);
     private const uint ReadAttributes=0x80,ReadEa=0x8,ListDirectory=0x1,BackupSemantics=0x02000000;
     private const int QueryBuffer=64*1024,FileBasicInformation=4,FileBothDirectoryInformation=3;
     private static SafeFileHandle OpenExisting(string path,FileAccess access) => File.OpenHandle(path,FileMode.Open,access,FileShare.ReadWrite|FileShare.Delete,FileOptions.RandomAccess);

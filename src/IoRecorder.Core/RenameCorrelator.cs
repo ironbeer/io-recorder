@@ -33,6 +33,15 @@ public sealed class RenameCorrelator(Action<IoEvent> publish,long timeoutUs=2_00
         }
         if(_deadlines.Count>0) Expire(nowUs);
     }
+    // The file left memory (FileDelete): its key may now name another file. A share's file (SMB) leaves soon after it is
+    // closed and its key is reused within moments, which once named an unrelated file as a rename's destination; the rename
+    // keeps waiting for nothing more and is published without a destination (the replay skips it).
+    public void Gone(ulong fileKey)
+    {
+        if(fileKey==0 || !_byKey.Remove(fileKey,out var item)) return;
+        item.Key=0;
+        if(item.Completed) Release(item,"Rename destination not observed before the file left memory; replay will skip");
+    }
     // A request superseded before completion (same IRP reported again) must not be published separately.
     public void Forget(IoEvent rename) { if(_byEvent.Remove(rename,out var item) && item.Key!=0) _byKey.Remove(item.Key); }
     public void Flush() { foreach(var item in _byEvent.Values.ToArray()) Release(item,"Rename destination not observed before stop; replay will skip"); _deadlines.Clear(); }

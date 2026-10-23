@@ -778,7 +778,14 @@ await Test("compare: 'replayed requests only' leaves out the test target's own I
                      new IoEvent { Sequence=900002,StartUs=5_100_000,EndUs=5_100_100,Operation=IoOperation.Write,ProcessId=Environment.ProcessId,ProcessName="IORecorder",Path=Path.Combine(dataset,DatasetBuilder.Marker),FileObject="M",Size=512,Transferred=512,NtStatus=0,IoFlags=0 } };
     File.AppendAllLines(Path.Combine(trace,"events.jsonl"),extra.Select(e=>JsonSerializer.Serialize(e,JsonStore.Options)));
     SessionAnalyzer.Export(trace);
+    // The recorded machine's own I/O in the original (the OS changing a file's size, the indexer asking about it): never replayed.
+    string original=link.Paths[psd];
+    var machine=new[]{ new IoEvent { Sequence=900003,StartUs=4_000_000,EndUs=4_000_100,Operation=IoOperation.SetEndOfFile,ProcessId=4,ProcessName="System",Path=original,FileObject="S",Size=4096,NtStatus=0,MatchesRoot=true },
+                       new IoEvent { Sequence=900004,StartUs=4_100_000,EndUs=4_100_100,Operation=IoOperation.QueryInfo,ProcessId=6666,ProcessName="SearchProtocolHost",Path=original,FileObject="Q",NtStatus=0,MatchesRoot=true } };
+    File.AppendAllLines(Path.Combine(session,"events.jsonl"),machine.Select(e=>JsonSerializer.Serialize(e,JsonStore.Options)));
+    SessionAnalyzer.Export(session);
     var all=ReplayComparison.Build(session,trace); var replayed=ReplayComparison.Build(session,trace,ComparisonScope.Replayed);
+    Check(all.Original.Operations.GetValueOrDefault("SetEndOfFile")==replayed.Original.Operations.GetValueOrDefault("SetEndOfFile")+1,"the original's machine I/O is in 'all' only");
     // The marker is the tool's own file in both scopes.
     Check(all.Replay.ReadBytes==all.Original.ReadBytes+65536 && all.Replay.WriteBytes==all.Original.WriteBytes,"'all' keeps every process");
     Check(replayed.Replay.ReadBytes==replayed.Original.ReadBytes && replayed.Replay.WriteBytes==replayed.Original.WriteBytes && replayed.Replay.Reads==replayed.Original.Reads
@@ -793,6 +800,26 @@ await Test("compare: 'replayed requests only' leaves out the test target's own I
     // A link written before the process id was kept: the IO Recorder process with the most I/O.
     link.ProcessId=null; JsonStore.Write(linkFile,link);
     Check(ReplayComparison.Build(session,trace,ComparisonScope.Replayed).ReplayProcessId==Environment.ProcessId,"older links find the replay process");
+    return Task.CompletedTask;
+});
+
+await Test("compare: the replay's own checks of the dummy before its first request are its preparation, not replayed requests",()=>
+{
+    string session=DemoSession.Create(Sub("compare-setup-demo")),dataset=Sub("compare-setup-dataset");
+    string trace=DemoSession.CreateReplayTrace(session,dataset),linkFile=Path.Combine(trace,ReplayCapture.LinkFile);
+    // A missing dummy path checked 0.2 s into the recording (as a file, then as a folder), before the first request at 1.5 s.
+    string missing=Path.Combine(dataset,"C","nothing","here.bin");
+    var checks=new[] { 1,2 }.Select(i=>new IoEvent { Sequence=800_000+i,StartUs=200_000+i*10,EndUs=200_005+i*10,Operation=IoOperation.Open,ProcessId=Environment.ProcessId,ProcessName="IORecorder",Path=missing,FileObject="C"+i,NtStatus=0xC000003A,CreateDisposition=1 });
+    File.AppendAllLines(Path.Combine(trace,"events.jsonl"),checks.Select(e=>JsonSerializer.Serialize(e,JsonStore.Options)));
+    SessionAnalyzer.Export(trace);
+    var older=ReplayComparison.Build(session,trace);
+    var link=JsonStore.Read<ReplayLink>(linkFile); var started=JsonStore.Read<SessionManifest>(Path.Combine(trace,"session.json")).StartedUtc;
+    link.PreparedUtc=started.AddSeconds(.4); link.FirstRequestUtc=started.AddSeconds(1.4); JsonStore.Write(linkFile,link);
+    var c=ReplayComparison.Build(session,trace);
+    long Me(ReplayComparison x)=>x.Processes.Single(p=>p.Process=="IORecorder"+ReplayComparison.ReplayProcessSuffix).ReplayOperations;
+    var span=c.Values.Single(v=>v.Item=="I/Oがあった時間");
+    Check(older.Replay.FailedOperations==c.Replay.FailedOperations+2 && Me(older)==Me(c)+2 && span.Replay<span.Original+1,
+        $"the checks are left out of the replay side (failed {older.Replay.FailedOperations} → {c.Replay.FailedOperations}, span {span.Original:N2} → {span.Replay:N2} s)");
     return Task.CompletedTask;
 });
 
@@ -957,6 +984,37 @@ await Test("launch: a shortcut gives its program, and the application started fo
     try { Check(AppLauncher.Start(app)>0,"started"); }
     catch(Exception ex) when(ex is InvalidOperationException or System.ComponentModel.Win32Exception && Environment.GetEnvironmentVariable("CI")=="true") { Console.WriteLine("  (CI: no desktop to start an application from: "+ex.Message+")"); }
     Check(AppLauncher.StartMenu().All(a=>File.Exists(a.Path) && a.Path.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)),"the Start menu lists programs that exist");
+});
+await Test("recording on a share: no rename destination from a key reused after its file left memory, no request on a name last seen missing; a folder record's machine I/O is not replayed",async()=>
+{
+    var published=new List<IoEvent>(); var renames=new RenameCorrelator(published.Add);
+    IoEvent Rename(string path)=>new() { Operation=IoOperation.Rename,Path=path,NtStatus=0 };
+    // The marker's temporary file renamed, its file left memory, and the key came back on a frame (seen on a Samba share).
+    var marker=Rename(@"Y:\d\.iorecorder-dataset.json.tmp"); renames.Started(0x10,marker); renames.Completed(marker,100);
+    renames.Gone(0x10); renames.Observe(0x10,@"Y:\d\frames\frames_000001.bin",200);
+    Check(published.Count==1 && marker.DestinationPath==null && marker.Note!.Contains("left memory"),"no destination from a reused key");
+    var saved=Rename(@"C:\w\a.tmp"); renames.Started(0x20,saved); renames.Completed(saved,300); renames.Observe(0x20,@"C:\w\a.aep",400);
+    Check(published.Count==2 && saved.DestinationPath==@"C:\w\a.aep","a key still in memory still gives the destination");
+    var missing=new MissingNames();
+    missing.Opened(@"Y:\d\renders\new_000421.bin",0xC000003A);
+    Check(missing.Contains(@"y:\D\renders\new_000421.bin"),"a name not found");
+    missing.Opened(@"Y:\d\renders\new_000421.bin",0xC0000043);
+    Check(missing.Contains(@"Y:\d\renders\new_000421.bin"),"a refused open (sharing violation) changes nothing");
+    missing.Opened(@"Y:\d\renders\new_000421.bin",0);
+    Check(!missing.Contains(@"Y:\d\renders\new_000421.bin"),"a create brings the name back");
+    // A folder record: the application, the OS writing its file out, Defender reading a file only it touched.
+    const string file=@"C:\share\cut.psd",scanned=@"C:\share\scanned.bin";
+    IoEvent Folder(IoEvent e,int pid,string name) { e.ProcessId=pid; e.ProcessName=name; e.MatchesRoot=true; return e; }
+    var events=new[] { Folder(Open(1,file,"A",100,disposition:2,info:2),10,"Photoshop"),Folder(Op(2,IoOperation.Write,file,"A",200,4096,pid:10),10,"Photoshop"),
+        Folder(Op(3,IoOperation.SetEndOfFile,file,"S",300,4096,pid:4),4,"System"),Folder(Open(4,scanned,"V",400),77,"MsMpEng"),
+        Folder(Op(5,IoOperation.Read,scanned,"V",500,8192,pid:77),77,"MsMpEng"),Folder(Op(6,IoOperation.Cleanup,file,"A",600,pid:10),10,"Photoshop") };
+    string s=Session("machine-io",events,[new SizeObservation { Path=scanned,ObservedUs=1,Size=8192 }]);
+    string d=Sub("machine-io-data"); var m=await DatasetBuilder.GenerateAsync(s,d);
+    Check(!m.InitialSizes.Keys.Any(k=>k.EndsWith("scanned.bin",StringComparison.OrdinalIgnoreCase)),"no dummy for a file only the machine's own processes used");
+    var r=await new ReplayEngine().RunAsync(s,d,new() { Speed=1000 });
+    var statuses=JsonStore.Lines<ReplayOutcome>(Path.Combine(s,r.OutcomeFile!)).ToDictionary(o=>o.Sequence,o=>o.Status);
+    Check(r.Failed==0 && statuses[2]=="Executed" && new[] { 3L,4,5 }.All(n=>statuses[n]=="SkippedMachineProcess") && r.Notes.Any(n=>n.Contains("SkippedMachineProcess")),
+        $"the application replayed, the machine's own I/O not ({string.Join(", ",statuses.Select(p=>$"{p.Key}:{p.Value}"))})");
 });
 await Test("network drives: a mapped drive is its share, also where the letter is not there; unknown drives and unreachable shares stop with a reason",async()=>
 {
